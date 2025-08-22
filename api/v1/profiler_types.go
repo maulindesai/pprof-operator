@@ -30,10 +30,6 @@ type ProfilerSpec struct {
 	// The following markers will use OpenAPI v3 schema to validate the value
 	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
 
-	// Selector to find pods to monitor
-	// +optional
-	Selector *metav1.LabelSelector `json:"selector,omitempty"`
-
 	// Target container to monitor
 	TargetContainer string `json:"targetContainer"`
 
@@ -69,6 +65,77 @@ type ProfilerSpec struct {
 	// AWS credentials secret name
 	// +optional
 	AWSCredentialsSecret string `json:"awsCredentialsSecret,omitempty"`
+
+	// ScrapTarget is the URL to scrape profiles from
+	// +optional
+	ScrapTarget *ScrapTarget `json:"scrapURL,omitempty"`
+}
+
+// ScrapTarget Details
+type ScrapTarget struct {
+
+	// ScrapURL Scrap Endpoint
+	// +optional
+	ScrapeURL string `json:"scrapeURL,omitempty"`
+
+	// Auth Scrap Endpoint authentication detail
+	// +optional
+	Auth *Auth `json:"auth,omitempty,omitempty"`
+}
+
+// AuthType defines the type of authentication
+// +kubebuilder:validation:Enum=Basic;None
+type AuthType string
+
+const (
+	// AuthTypeBasic represents basic authentication
+	AuthTypeBasic AuthType = "Basic"
+)
+
+// Auth contains authentication configuration
+type Auth struct {
+	// Type of authentication to use
+	// +kubebuilder:default=Basic
+	Type AuthType `json:"type"`
+
+	// BasicAuth contains credentials for basic authentication
+	// +optional
+	BasicAuth *BasicAuth `json:"basicAuth,omitempty"`
+}
+
+// BasicAuth contains credentials for basic authentication
+type BasicAuth struct {
+	// Username for basic authentication
+	// +optional
+	Username string `json:"username,omitempty"`
+
+	// Password for basic authentication
+	// +optional
+	Password string `json:"password,omitempty"`
+
+	// SecretRef references a secret that contains the credentials
+	// +optional
+	SecretRef *SecretRef `json:"secretRef,omitempty"`
+}
+
+// SecretRef contains a reference to a secret
+type SecretRef struct {
+	// Name of the secret
+	Name string `json:"name"`
+
+	// Namespace of the secret
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// UsernameKey is the key in the secret that contains the username
+	// +optional
+	// +kubebuilder:default=username
+	UsernameKey string `json:"usernameKey,omitempty"`
+
+	// PasswordKey is the key in the secret that contains the password
+	// +optional
+	// +kubebuilder:default=password
+	PasswordKey string `json:"passwordKey,omitempty"`
 }
 
 // ProfilerStatus defines the observed state of Profiler.
