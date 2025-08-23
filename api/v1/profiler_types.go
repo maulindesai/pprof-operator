@@ -25,13 +25,6 @@ import (
 
 // ProfilerSpec defines the desired state of Profiler
 type ProfilerSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
-
-	// Target container to monitor
-	TargetContainer string `json:"targetContainer"`
 
 	// CPU threshold in percentage (0-100) that triggers profiling
 	// +optional
@@ -49,6 +42,11 @@ type ProfilerSpec struct {
 	// +optional
 	// +kubebuilder:default=30
 	ProfileDuration int32 `json:"profileDuration,omitempty"`
+
+	// Monitoring period in seconds to check resource usage
+	// +optional
+	// +kubebuilder:default=15
+	MonitoringPeriod int32 `json:"monitoringPeriod,omitempty"`
 
 	// S3 bucket to upload profiles to
 	S3Bucket string `json:"s3Bucket"`

@@ -1,5 +1,7 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
+# Sidecar image URL
+SIDECAR_IMG ?= pprof-operator/pprof-sidecar:latest
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -123,6 +125,14 @@ docker-build: ## Build docker image with the manager.
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
 
+.PHONY: docker-build-sidecar
+docker-build-sidecar: ## Build docker image with the sidecar.
+	$(CONTAINER_TOOL) build -t ${SIDECAR_IMG} -f sidecar/Dockerfile .
+
+.PHONY: docker-push-sidecar
+docker-push-sidecar: ## Push docker image with the sidecar.
+	$(CONTAINER_TOOL) push ${SIDECAR_IMG}
+
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
 # - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
@@ -139,6 +149,25 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
 	- $(CONTAINER_TOOL) buildx rm pprof-operator-builder
 	rm Dockerfile.cross
+
+.PHONY: docker-buildx-sidecar
+docker-buildx-sidecar: ## Build and push docker image for the sidecar for cross-platform support
+	# copy existing sidecar Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
+	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' sidecar/Dockerfile > sidecar/Dockerfile.cross
+	- $(CONTAINER_TOOL) buildx create --name pprof-sidecar-builder
+	$(CONTAINER_TOOL) buildx use pprof-sidecar-builder
+	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${SIDECAR_IMG} -f sidecar/Dockerfile.cross .
+	- $(CONTAINER_TOOL) buildx rm pprof-sidecar-builder
+	rm sidecar/Dockerfile.cross
+
+.PHONY: docker-build-all
+docker-build-all: docker-build docker-build-sidecar ## Build both operator and sidecar docker images
+
+.PHONY: docker-push-all
+docker-push-all: docker-push docker-push-sidecar ## Push both operator and sidecar docker images
+
+.PHONY: docker-buildx-all
+docker-buildx-all: docker-buildx docker-buildx-sidecar ## Build and push both operator and sidecar docker images for cross-platform support
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.

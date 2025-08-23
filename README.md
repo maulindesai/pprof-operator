@@ -1,8 +1,18 @@
 # pprof-operator
-// TODO(user): Add simple overview of use/purpose
+
+A Kubernetes operator for automatically collecting pprof profiles from applications when CPU or memory thresholds are exceeded.
 
 ## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+
+The pprof-operator is designed to help developers and operators diagnose performance issues in their applications running on Kubernetes. It works by:
+
+1. Monitoring containers for CPU and memory usage
+2. Automatically collecting pprof profiles when thresholds are exceeded
+3. Uploading the profiles to AWS S3 for later analysis
+
+The operator consists of two main components:
+- **Controller**: Manages the Profiler CRD and injects the sidecar container into target pods
+- **Sidecar**: Monitors the target container and collects profiles when thresholds are exceeded
 
 ## Getting Started
 
@@ -13,14 +23,14 @@
 - Access to a Kubernetes v1.11.3+ cluster.
 
 ### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+**Build and push both the operator and sidecar images:**
 
 ```sh
-make docker-build docker-push IMG=<some-registry>/pprof-operator:tag
+make docker-build-all docker-push-all IMG=<some-registry>/pprof-operator:tag SIDECAR_IMG=<some-registry>/pprof-sidecar:tag
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
+**NOTE:** These images ought to be published in the personal registry you specified.
+And it is required to have access to pull the images from the working environment.
 Make sure you have the proper permission to the registry if the above commands don’t work.
 
 **Install the CRDs into the cluster:**
@@ -38,14 +48,74 @@ make deploy IMG=<some-registry>/pprof-operator:tag
 > **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
 privileges or be logged in as admin.
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+**Create a Profiler resource**
+
+Create a Profiler resource to configure which pods to monitor and the thresholds for profiling:
+
+```yaml
+apiVersion: observability.pprof-operator.dev/v1
+kind: Profiler
+metadata:
+  name: example-profiler
+spec:
+  # Select pods to monitor by labels
+  selector:
+    matchLabels:
+      app: my-application
+  # Target container to monitor
+  targetContainer: app
+  # CPU threshold in percentage (0-100) that triggers profiling
+  cpuThreshold: 70
+  # Memory threshold in percentage (0-100) that triggers profiling
+  memoryThreshold: 80
+  # Duration in seconds to collect the profile
+  profileDuration: 30
+  # S3 bucket to upload profiles to
+  s3Bucket: my-profiles-bucket
+  # S3 region
+  s3Region: us-west-2
+  # S3 path prefix for storing profiles
+  s3PathPrefix: profiles/
+  # AWS credentials secret name
+  awsCredentialsSecret: aws-credentials
+```
+
+Apply the Profiler resource:
+
+```sh
+kubectl apply -f profiler.yaml
+```
+
+You can also apply the sample from the config/samples:
 
 ```sh
 kubectl apply -k config/samples/
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
+> **NOTE**: Make sure to update the sample with your S3 bucket and AWS credentials.
+
+**Create AWS credentials secret**
+
+The sidecar needs AWS credentials to upload profiles to S3. Create a secret with your AWS credentials:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aws-credentials
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: "your-access-key"
+  AWS_SECRET_ACCESS_KEY: "your-secret-key"
+```
+
+Apply the secret:
+
+```sh
+kubectl apply -f aws-credentials.yaml
+```
+
+Make sure the `awsCredentialsSecret` field in your Profiler resource matches the name of this secret.
 
 ### To Uninstall
 **Delete the instances (CRs) from the cluster:**
@@ -132,4 +202,3 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-
