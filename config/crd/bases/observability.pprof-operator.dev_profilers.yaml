@@ -55,6 +55,11 @@ spec:
                 maximum: 100
                 minimum: 0
                 type: integer
+              monitoringPeriod:
+                default: 15
+                description: Monitoring period in seconds to check resource usage
+                format: int32
+                type: integer
               profileDuration:
                 default: 30
                 description: Duration in seconds to collect the profile
@@ -70,58 +75,61 @@ spec:
                 default: us-east-1
                 description: S3 region
                 type: string
-              selector:
-                description: Selector to find pods to monitor
+              scrapURL:
+                description: ScrapTarget is the URL to scrape profiles from
                 properties:
-                  matchExpressions:
-                    description: matchExpressions is a list of label selector requirements.
-                      The requirements are ANDed.
-                    items:
-                      description: |-
-                        A label selector requirement is a selector that contains values, a key, and an operator that
-                        relates the key and values.
-                      properties:
-                        key:
-                          description: key is the label key that the selector applies
-                            to.
-                          type: string
-                        operator:
-                          description: |-
-                            operator represents a key's relationship to a set of values.
-                            Valid operators are In, NotIn, Exists and DoesNotExist.
-                          type: string
-                        values:
-                          description: |-
-                            values is an array of string values. If the operator is In or NotIn,
-                            the values array must be non-empty. If the operator is Exists or DoesNotExist,
-                            the values array must be empty. This array is replaced during a strategic
-                            merge patch.
-                          items:
+                  auth:
+                    description: Auth Scrap Endpoint authentication detail
+                    properties:
+                      basicAuth:
+                        description: BasicAuth contains credentials for basic authentication
+                        properties:
+                          password:
+                            description: Password for basic authentication
                             type: string
-                          type: array
-                          x-kubernetes-list-type: atomic
-                      required:
-                      - key
-                      - operator
-                      type: object
-                    type: array
-                    x-kubernetes-list-type: atomic
-                  matchLabels:
-                    additionalProperties:
-                      type: string
-                    description: |-
-                      matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
-                      map is equivalent to an element of matchExpressions, whose key field is "key", the
-                      operator is "In", and the values array contains only "value". The requirements are ANDed.
+                          secretRef:
+                            description: SecretRef references a secret that contains
+                              the credentials
+                            properties:
+                              name:
+                                description: Name of the secret
+                                type: string
+                              namespace:
+                                description: Namespace of the secret
+                                type: string
+                              passwordKey:
+                                default: password
+                                description: PasswordKey is the key in the secret
+                                  that contains the password
+                                type: string
+                              usernameKey:
+                                default: username
+                                description: UsernameKey is the key in the secret
+                                  that contains the username
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          username:
+                            description: Username for basic authentication
+                            type: string
+                        type: object
+                      type:
+                        default: Basic
+                        description: Type of authentication to use
+                        enum:
+                        - Basic
+                        - None
+                        type: string
+                    required:
+                    - type
                     type: object
+                  scrapeURL:
+                    description: ScrapURL Scrap Endpoint
+                    type: string
                 type: object
-                x-kubernetes-map-type: atomic
-              targetContainer:
-                description: Target container to monitor
-                type: string
             required:
             - s3Bucket
-            - targetContainer
             type: object
           status:
             description: status defines the observed state of Profiler
