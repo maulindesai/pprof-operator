@@ -15,7 +15,7 @@ COPY sidecar/ sidecar/
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o pprof-sidecar sidecar/cmd/main.go
 
 # Use distroless as minimal base image to package the sidecar binary
-FROM gcr.io/distroless/static:nonroot
+FROM alpine
 WORKDIR /
 COPY --from=builder /workspace/pprof-sidecar .
 USER 65532:65532

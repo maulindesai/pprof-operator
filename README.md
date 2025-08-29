@@ -14,6 +14,31 @@ The operator consists of two main components:
 - **Controller**: Manages the Profiler CRD and injects the sidecar container into target pods
 - **Sidecar**: Monitors the target container and collects profiles when thresholds are exceeded
 
+### Architecture
+
+The pprof-operator uses a Kubernetes operator pattern with the following components:
+
+1. **Profiler Custom Resource**: Defines which applications to monitor and the thresholds for profiling
+2. **Controller**: Watches for Profiler resources and manages the lifecycle of profiling sidecars
+3. **Webhook**: Injects profiling sidecars into pods that match the selector in the Profiler resource
+4. **Sidecar Container**: Runs alongside the target container, monitoring resource usage and collecting profiles
+
+When a pod is created that matches the selector in a Profiler resource, the webhook injects a sidecar container. This sidecar monitors the target container's resource usage and, when thresholds are exceeded, collects pprof profiles and uploads them to S3.
+
+### Security Considerations
+
+The pprof-operator requires certain permissions to function properly:
+
+1. **RBAC Permissions**: The operator needs permissions to watch and modify pods, deployments, and Profiler resources
+2. **AWS Credentials**: For uploading profiles to S3, the operator needs AWS credentials
+3. **Host Access**: The sidecar container needs access to the cgroup filesystem to monitor resource usage
+
+To minimize security risks:
+- Use a dedicated IAM role with minimal permissions for S3 access
+- Store AWS credentials in a Kubernetes secret
+- Consider network policies to restrict the operator's communication
+- Review the RBAC permissions in the deployment manifests
+
 ## Getting Started
 
 ### Prerequisites
@@ -83,7 +108,7 @@ spec:
 Apply the Profiler resource:
 
 ```sh
-kubectl apply -f profiler.yaml
+kubectl apply -f config/sample/observability_v1_profiler.yaml
 ```
 
 You can also apply the sample from the config/samples:
@@ -180,8 +205,69 @@ the '--force' flag and manually ensure that any custom configuration
 previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
 is manually re-applied afterwards.
 
+## Troubleshooting
+
+### Common Issues
+
+1. **Sidecar Not Injected**
+   - Check if the pod has the correct labels matching the Profiler selector
+   - Verify the webhook is running: `kubectl get pods -n <operator-namespace>`
+   - Check webhook logs: `kubectl logs -n <operator-namespace> <webhook-pod-name>`
+   - Ensure the pod is created after the Profiler resource
+
+2. **Profiles Not Being Collected**
+   - Check sidecar logs: `kubectl logs -n <app-namespace> <pod-name> -c pprof-sidecar`
+   - Verify CPU/Memory thresholds are set appropriately
+   - Ensure the target container exposes pprof endpoints
+
+3. **Profiles Not Uploading to S3**
+   - Verify AWS credentials are correct
+   - Check S3 bucket permissions
+   - Ensure the sidecar has network access to AWS S3
+   - Check for any errors in the sidecar logs
+
+4. **Webhook Certificate Issues**
+   - Verify certificates are properly mounted
+   - Check certificate expiration
+   - Regenerate certificates if needed: `kubectl delete secret webhook-server-cert -n <operator-namespace>`
+
+### Debugging
+
+1. **Enable Verbose Logging**
+   - Set the log level to debug in the operator deployment
+   - Add the following to the operator container args: `--zap-log-level=debug`
+
+2. **Check Events**
+   - View Kubernetes events: `kubectl get events -n <namespace>`
+   - Look for events related to the operator, webhook, or target pods
+
+3. **Verify RBAC Permissions**
+   - Ensure the operator service account has the necessary permissions
+   - Check for any "forbidden" errors in the logs
+
 ## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
+
+Contributions to the pprof-operator are welcome! Here's how you can contribute:
+
+1. **Report Issues**: If you find a bug or have a feature request, please open an issue on GitHub.
+
+2. **Submit Pull Requests**: 
+   - Fork the repository
+   - Create a new branch for your feature or bugfix
+   - Make your changes
+   - Submit a pull request
+
+3. **Development Guidelines**:
+   - Follow Go coding standards
+   - Add unit tests for new functionality
+   - Update documentation for any changes
+   - Run `make test` to ensure all tests pass
+   - Run `make lint` to check for code quality issues
+
+4. **Code Review Process**:
+   - All pull requests require at least one review
+   - Address any comments or feedback from reviewers
+   - Once approved, a maintainer will merge your changes
 
 **NOTE:** Run `make help` for more information on all potential `make` targets
 
@@ -189,7 +275,7 @@ More information can be found via the [Kubebuilder Documentation](https://book.k
 
 ## License
 
-Copyright 2025.
+Copyright 2023.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

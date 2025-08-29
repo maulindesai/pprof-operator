@@ -10,43 +10,16 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /mutate-observability-pprof-operator-dev-v1-profiler
-  failurePolicy: Fail
-  name: mprofiler-v1.kb.io
+      path: /mutate-v1-pod
+  failurePolicy: Ignore
+  name: mpod-v1.kb.io
   rules:
   - apiGroups:
-    - observability.pprof-operator.dev
+    - ""
     apiVersions:
     - v1
     operations:
     - CREATE
-    - UPDATE
     resources:
-    - profilers
-  sideEffects: None
----
-apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingWebhookConfiguration
-metadata:
-  name: validating-webhook-configuration
-webhooks:
-- admissionReviewVersions:
-  - v1
-  clientConfig:
-    service:
-      name: webhook-service
-      namespace: system
-      path: /validate-observability-pprof-operator-dev-v1-profiler
-  failurePolicy: Fail
-  name: vprofiler-v1.kb.io
-  rules:
-  - apiGroups:
-    - observability.pprof-operator.dev
-    apiVersions:
-    - v1
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - profilers
+    - pods
   sideEffects: None

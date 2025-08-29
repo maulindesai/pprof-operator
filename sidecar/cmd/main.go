@@ -1,22 +1,33 @@
 package main
 
 // This sidecar supports reading CPU and memory metrics from containers running under
-// different container runtimes (Docker, containerd, CRI-O) and with either cgroup v1 or cgroup v2.
+// different container runtimes (Docker, containerd, CRI-O) using the kubelet API (metrics.k8s.io).
+// It uses pod UID to find container metrics.
 // It monitors resource usage and collects profiles when thresholds are exceeded.
+// The sidecar also supports QoS-aware profiling, adjusting thresholds based on the pod's QoS class.
+//
+// Logging System:
+// The sidecar uses structured logging with different log levels for better debugging and monitoring:
+// - Debug (V(1), V(2)): Detailed information useful for debugging
+// - Info: General operational information
+// - Warning (V(0)): Potential issues that don't cause failures
+// - Error: Actual errors that might require attention
+// - Panic: Critical issues that require immediate attention
+//
+// To set the log level, use the LOG_LEVEL environment variable with one of:
+// "debug", "info", "warn"/"warning", "error", or "panic"
+// For backward compatibility, setting DEBUG=true will enable debug level logging.
 
 import (
-	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
-	v1 "github.com/maulindesai/pprof-operator/api/v1"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -24,11 +35,18 @@ import (
 	sdkconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-
+	"github.com/go-logr/logr"
+	"github.com/go-logr/zapr"
+	"github.com/maulindesai/pprof-operator/sidecar/pkg/types"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
+
+// Global logger
+var logger logr.Logger
 
 const (
 	defaultCPUThreshold     = 80
@@ -50,7 +68,7 @@ type Config struct {
 	AWSSecretKey     string
 
 	//Scrap Target
-	ScrapTarget v1.ScrapTarget
+	ScrapTarget types.ScrapTarget
 
 	// Kubernetes related fields
 	Namespace string
@@ -58,8 +76,8 @@ type Config struct {
 	// Kubernetes clients
 	K8sClient *kubernetes.Clientset
 
-	// Container ID for cgroup metrics
-	ContainerID string
+	// Pod UID for finding container metrics
+	PodUID string
 }
 
 func loadConfig() (*Config, error) {
@@ -75,9 +93,16 @@ func loadConfig() (*Config, error) {
 	if cpuThresholdStr != "" {
 		cpuThreshold, err = strconv.Atoi(cpuThresholdStr)
 		if err != nil {
-			log.Printf("Warning: Invalid CPU_THRESHOLD value '%s', using default %d", cpuThresholdStr, defaultCPUThreshold)
+			logger.V(0).Info("Invalid CPU_THRESHOLD value, using default",
+				"value", cpuThresholdStr,
+				"default", defaultCPUThreshold,
+				"error", err)
 			cpuThreshold = defaultCPUThreshold
+		} else {
+			logger.V(1).Info("Using CPU threshold from environment", "threshold", cpuThreshold)
 		}
+	} else {
+		logger.V(1).Info("Using default CPU threshold", "threshold", cpuThreshold)
 	}
 
 	memoryThresholdStr := os.Getenv("MEMORY_THRESHOLD")
@@ -85,9 +110,16 @@ func loadConfig() (*Config, error) {
 	if memoryThresholdStr != "" {
 		memoryThreshold, err = strconv.Atoi(memoryThresholdStr)
 		if err != nil {
-			log.Printf("Warning: Invalid MEMORY_THRESHOLD value '%s', using default %d", memoryThresholdStr, defaultMemoryThreshold)
+			logger.V(0).Info("Invalid MEMORY_THRESHOLD value, using default",
+				"value", memoryThresholdStr,
+				"default", defaultMemoryThreshold,
+				"error", err)
 			memoryThreshold = defaultMemoryThreshold
+		} else {
+			logger.V(1).Info("Using memory threshold from environment", "threshold", memoryThreshold)
 		}
+	} else {
+		logger.V(1).Info("Using default memory threshold", "threshold", memoryThreshold)
 	}
 
 	profileDurationStr := os.Getenv("PROFILE_DURATION")
@@ -95,9 +127,16 @@ func loadConfig() (*Config, error) {
 	if profileDurationStr != "" {
 		profileDuration, err = strconv.Atoi(profileDurationStr)
 		if err != nil {
-			log.Printf("Warning: Invalid PROFILE_DURATION value '%s', using default %d", profileDurationStr, defaultProfileDuration)
+			logger.V(0).Info("Invalid PROFILE_DURATION value, using default",
+				"value", profileDurationStr,
+				"default", defaultProfileDuration,
+				"error", err)
 			profileDuration = defaultProfileDuration
+		} else {
+			logger.V(1).Info("Using profile duration from environment", "duration", profileDuration)
 		}
+	} else {
+		logger.V(1).Info("Using default profile duration", "duration", profileDuration)
 	}
 
 	s3Bucket := os.Getenv("S3_BUCKET")
@@ -107,7 +146,7 @@ func loadConfig() (*Config, error) {
 
 	s3Region := os.Getenv("S3_REGION")
 	if s3Region == "" {
-		s3Region = "us-east-1" // Default region
+		s3Region = "us-west-2" // Default region
 	}
 
 	s3PathPrefix := os.Getenv("S3_PATH_PREFIX")
@@ -118,15 +157,17 @@ func loadConfig() (*Config, error) {
 	// Get Kubernetes namespace from the environment or use default
 	namespace := os.Getenv("POD_NAMESPACE")
 	if namespace == "" {
+		namespace = "default"
+		// no need for now
 		// Try to get namespace from the service account
-		data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
-		if err == nil {
-			namespace = strings.TrimSpace(string(data))
-		}
-
-		if namespace == "" {
-			namespace = "default"
-		}
+		//data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+		//if err == nil {
+		//	namespace = strings.TrimSpace(string(data))
+		//}
+		//
+		//if namespace == "" {
+		//	namespace = "default"
+		//}
 	}
 
 	// Get pod name from the environment
@@ -135,7 +176,7 @@ func loadConfig() (*Config, error) {
 		// Try to get pod name from hostname
 		podName, err = os.Hostname()
 		if err != nil {
-			log.Printf("Warning: Could not determine pod name: %v", err)
+			logger.Info("Could not determine pod name", "error", err)
 		}
 	}
 
@@ -156,17 +197,21 @@ func loadConfig() (*Config, error) {
 	if monitoringPeriodStr != "" {
 		monitoringPeriodSec, err := strconv.Atoi(monitoringPeriodStr)
 		if err != nil {
-			log.Printf("Warning: Invalid MONITORING_PERIOD value '%s', using default %s", monitoringPeriodStr, defaultMonitoringPeriod)
+			logger.V(0).Info("Invalid MONITORING_PERIOD value, using default",
+				"value", monitoringPeriodStr,
+				"default", defaultMonitoringPeriod,
+				"error", err)
 		} else {
 			monitoringPeriod = time.Duration(monitoringPeriodSec) * time.Second
-			log.Printf("Using monitoring period from environment: %s", monitoringPeriod)
+			logger.V(1).Info("Using monitoring period from environment", "period", monitoringPeriod)
 		}
+	} else {
+		logger.V(1).Info("Using default monitoring period", "period", monitoringPeriod)
 	}
 
 	// Create the config
 	config := &Config{
 		TargetContainer:  targetContainer,
-		ContainerID:      "", // Will be populated later
 		CPUThreshold:     cpuThreshold,
 		MemoryThreshold:  memoryThreshold,
 		ProfileDuration:  profileDuration,
@@ -181,30 +226,20 @@ func loadConfig() (*Config, error) {
 		K8sClient:        k8sClient,
 		ScrapTarget:      getScrapTarget(),
 	}
-
-	// Find the container ID for the target container
-	containerID, err := findContainerID(targetContainer, k8sClient, namespace, podName)
-	if err != nil {
-		log.Printf("Warning: Failed to find container ID: %v", err)
-	} else {
-		config.ContainerID = containerID
-		log.Printf("Found container ID for %s: %s", targetContainer, containerID)
-	}
-
 	return config, nil
 }
 
-func getScrapTarget() v1.ScrapTarget {
+func getScrapTarget() types.ScrapTarget {
 	scarpTargetAuthType := os.Getenv("AUTH_TYPE")
-	scrapURL := os.Getenv("SCRAP_URL")
+	scrapURL := os.Getenv("SCRAPE_URL")
 	authUsername := os.Getenv("AUTH_USERNAME")
 	authPassword := os.Getenv("AUTH_PASSWORD")
 
-	var auth v1.Auth
-	if v1.AuthType(scarpTargetAuthType) == v1.AuthTypeBasic {
-		auth = v1.Auth{
-			Type: v1.AuthTypeBasic,
-			BasicAuth: &v1.BasicAuth{
+	var auth types.Auth
+	if types.AuthType(scarpTargetAuthType) == types.AuthTypeBasic {
+		auth = types.Auth{
+			Type: types.AuthTypeBasic,
+			BasicAuth: &types.BasicAuth{
 				Username:  authUsername,
 				Password:  authPassword,
 				SecretRef: nil,
@@ -212,7 +247,7 @@ func getScrapTarget() v1.ScrapTarget {
 		}
 	}
 
-	ScrapTarget := v1.ScrapTarget{
+	ScrapTarget := types.ScrapTarget{
 		ScrapeURL: scrapURL,
 		Auth:      &auth,
 	}
@@ -220,326 +255,294 @@ func getScrapTarget() v1.ScrapTarget {
 	return ScrapTarget
 }
 
-// findContainerID finds the container ID for the target container using Kubernetes API
-func findContainerID(targetContainer string, k8sClient *kubernetes.Clientset, namespace string, podName string) (string, error) {
-	// Get pod details from Kubernetes API
-	pod, err := k8sClient.CoreV1().Pods(namespace).Get(context.Background(), podName, metav1.GetOptions{})
-	if err != nil {
-		return "", fmt.Errorf("failed to get pod details from Kubernetes API: %w", err)
-	}
-
-	// Find the target container in the pod's status
-	for _, containerStatus := range pod.Status.ContainerStatuses {
-		if containerStatus.Name == targetContainer {
-			// Extract container ID from the containerID string (format: docker://containerID or containerd://containerID)
-			containerIDParts := strings.Split(containerStatus.ContainerID, "://")
-			if len(containerIDParts) == 2 {
-				return containerIDParts[1], nil
-			}
-			return containerStatus.ContainerID, nil
-		}
-	}
-
-	// If container not found in main containers, check init containers
-	for _, containerStatus := range pod.Status.InitContainerStatuses {
-		if containerStatus.Name == targetContainer {
-			containerIDParts := strings.Split(containerStatus.ContainerID, "://")
-			if len(containerIDParts) == 2 {
-				return containerIDParts[1], nil
-			}
-			return containerStatus.ContainerID, nil
-		}
-	}
-	return "", fmt.Errorf("container ID not found for %s in pod %s", targetContainer, podName)
+// ContainerStats represents the container stats from the kubelet API
+type ContainerStats struct {
+	Name string `json:"name"`
+	CPU  struct {
+		UsageNanoCores uint64 `json:"usageNanoCores"`
+	} `json:"cpu"`
+	Memory struct {
+		WorkingSetBytes uint64 `json:"workingSetBytes"`
+	} `json:"memory"`
 }
 
-// getCgroupMetrics reads CPU and memory metrics from cgroup files
-func getCgroupMetrics(config *Config) (float64, float64, error) {
-	if config.ContainerID == "" {
-		return 0, 0, fmt.Errorf("container ID not available")
+// PodStats represents the pod stats from the kubelet API
+type PodStats struct {
+	PodRef struct {
+		Name      string `json:"name"`
+		Namespace string `json:"namespace"`
+		UID       string `json:"uid"`
+	} `json:"podRef"`
+	Containers []ContainerStats `json:"containers"`
+}
+
+// KubeletStats represents the stats from the kubelet API
+type KubeletStats struct {
+	Pods []PodStats `json:"pods"`
+}
+
+// getKubeletMetrics reads CPU and memory metrics from the kubelet API in percentage
+func getKubeletMetrics(config *Config) (float64, float64, error) {
+	// Check if we have the necessary information
+	if config.PodName == "" || config.Namespace == "" || config.TargetContainer == "" {
+		return 0, 0, fmt.Errorf("pod name, namespace, or target container not available")
 	}
 
-	// Get CPU usage from cgroup
-	cpuUsage, cpuLimit, err := getCPUMetrics(config.ContainerID)
+	// Get pod details to find the node name
+	pod, err := config.K8sClient.CoreV1().Pods(config.Namespace).Get(context.Background(), config.PodName, metav1.GetOptions{})
 	if err != nil {
-		return 0, 0, fmt.Errorf("failed to get CPU metrics: %w", err)
+		return 0, 0, fmt.Errorf("failed to get pod details: %w", err)
 	}
 
-	// Get memory usage from cgroup
-	memUsage, memLimit, err := getMemoryMetrics(config.ContainerID)
+	nodeName := pod.Spec.NodeName
+	if nodeName == "" {
+		return 0, 0, fmt.Errorf("node name not available for pod %s", config.PodName)
+	}
+
+	logger.V(1).Info("Using node for metrics collection", "nodeName", nodeName)
+
+	// Get the kubelet API endpoint
+	// The kubelet API endpoint for container stats is /api/v1/nodes/{nodeName}/proxy/stats/summary
+	kubeletURL := fmt.Sprintf("/api/v1/nodes/%s/proxy/stats/summary", nodeName)
+	logger.V(2).Info("Constructed kubelet API URL", "url", kubeletURL)
+
+	// Use the Kubernetes client to proxy the request to the kubelet API
+	result := config.K8sClient.CoreV1().RESTClient().Get().AbsPath(kubeletURL).Do(context.Background())
+	rawData, err := result.Raw()
 	if err != nil {
-		return 0, 0, fmt.Errorf("failed to get memory metrics: %w", err)
+		return 0, 0, fmt.Errorf("failed to get stats from kubelet API: %w", err)
+	}
+
+	// Parse the JSON response
+	var stats KubeletStats
+	if err := json.Unmarshal(rawData, &stats); err != nil {
+		return 0, 0, fmt.Errorf("failed to parse kubelet API response: %w", err)
+	}
+
+	// Find the target pod and container in the stats
+	var cpuUsage, memoryUsage uint64
+	var cpuLimit, memoryLimit int64
+	found := false
+
+	// Find the target container in the pod spec to get resource limits
+	for _, container := range pod.Spec.Containers {
+		if container.Name == config.TargetContainer {
+			// Get CPU limit
+			if container.Resources.Limits != nil {
+				if cpuLimitQuantity, ok := container.Resources.Limits["cpu"]; ok {
+					cpuLimit = cpuLimitQuantity.MilliValue()
+				}
+			}
+			// Get memory limit
+			if container.Resources.Limits != nil {
+				if memoryLimitQuantity, ok := container.Resources.Limits["memory"]; ok {
+					memoryLimit = memoryLimitQuantity.Value()
+				}
+			}
+			break
+		}
+	}
+
+	// If no limits are set, get node capacity
+	if cpuLimit == 0 || memoryLimit == 0 {
+		logger.V(0).Info("No resource limits set for container, using node capacity",
+			"container", config.TargetContainer,
+			"namespace", config.Namespace,
+			"pod", config.PodName)
+		logger.V(0).Info("It's good practice to set CPU and memory limits for containers in pods")
+
+		node, err := config.K8sClient.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+		if err != nil {
+			logger.Error(err, "Failed to get node details", "nodeName", nodeName)
+			return 0, 0, fmt.Errorf("failed to get node details: %w", err)
+		}
+
+		if cpuLimit == 0 {
+			if cpuCapacity, ok := node.Status.Capacity["cpu"]; ok {
+				cpuLimit = cpuCapacity.MilliValue()
+			}
+		}
+
+		if memoryLimit == 0 {
+			if memoryCapacity, ok := node.Status.Capacity["memory"]; ok {
+				memoryLimit = memoryCapacity.Value()
+			}
+		}
+	}
+
+	// Find the target pod and container in the stats
+	for _, podStats := range stats.Pods {
+		if podStats.PodRef.Namespace == config.Namespace && podStats.PodRef.Name == config.PodName {
+			for _, containerStats := range podStats.Containers {
+				if containerStats.Name == config.TargetContainer {
+					cpuUsage = containerStats.CPU.UsageNanoCores
+					memoryUsage = containerStats.Memory.WorkingSetBytes
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+	}
+
+	if !found {
+		return 0, 0, fmt.Errorf("container stats not found for %s in pod %s", config.TargetContainer, config.PodName)
 	}
 
 	// Calculate percentages
-	cpuPercent := (float64(cpuUsage) / float64(cpuLimit)) * 100
-	memPercent := (float64(memUsage) / float64(memLimit)) * 100
+	cpuPercent := (float64(cpuUsage) / float64(cpuLimit*1000000)) * 100 // Convert milliCPU to nanoCPU
+	memPercent := (float64(memoryUsage) / float64(memoryLimit)) * 100
+
+	// Log metrics at different levels
+	logger.Info("Resource usage metrics",
+		"cpuPercent", fmt.Sprintf("%.2f%%", cpuPercent),
+		"memPercent", fmt.Sprintf("%.2f%%", memPercent))
+
+	logger.V(1).Info("Detailed resource metrics",
+		"cpuUsage", cpuUsage,
+		"cpuLimit", cpuLimit,
+		"cpuPercent", cpuPercent,
+		"memoryUsage", memoryUsage,
+		"memoryLimit", memoryLimit,
+		"memPercent", memPercent)
 
 	return cpuPercent, memPercent, nil
 }
 
-// getCPUMetrics reads CPU usage and limit from cgroup files
-func getCPUMetrics(containerID string) (uint64, uint64, error) {
-	// Try different possible cgroup paths for various container runtimes (docker, containerd, crio)
-	cgroupPaths := []string{
-		// Docker paths
-		fmt.Sprintf("/sys/fs/cgroup/cpu/docker/%s", containerID),
-		fmt.Sprintf("/sys/fs/cgroup/cpu/kubepods/*/docker-%s.scope", containerID),
-		fmt.Sprintf("/sys/fs/cgroup/cpu/kubepods/*/*/docker-%s.scope", containerID),
-		fmt.Sprintf("/sys/fs/cgroup/cpu/kubepods.slice/kubepods-*.slice/docker-%s.scope", containerID),
+// getMetrics reads CPU and memory metrics in percentage
+func getMetrics(config *Config) (float64, float64, error) {
+	logger.V(2).Info("Getting metrics for container",
+		"container", config.TargetContainer,
+		"namespace", config.Namespace,
+		"pod", config.PodName)
 
-		// Containerd paths
-		fmt.Sprintf("/sys/fs/cgroup/cpu/kubepods/*/containerd-%s.scope", containerID),
-		fmt.Sprintf("/sys/fs/cgroup/cpu/kubepods/*/*/containerd-%s.scope", containerID),
-		fmt.Sprintf("/sys/fs/cgroup/cpu/kubepods.slice/kubepods-*.slice/containerd-%s.scope", containerID),
-
-		// CRI-O paths
-		fmt.Sprintf("/sys/fs/cgroup/cpu/kubepods/*/crio-%s.scope", containerID),
-		fmt.Sprintf("/sys/fs/cgroup/cpu/kubepods/*/*/crio-%s.scope", containerID),
-		fmt.Sprintf("/sys/fs/cgroup/cpu/kubepods.slice/kubepods-*.slice/crio-%s.scope", containerID),
-
-		// Unified cgroup v2 paths (for all runtimes)
-		fmt.Sprintf("/sys/fs/cgroup/kubepods.slice/kubepods-*.slice/*/%s", containerID),
+	// Get metrics using the metrics.k8s.io client
+	cpuPercent, memPercent, err := getKubeletMetrics(config)
+	if err != nil {
+		logger.Error(err, "Failed to get metrics using kubelet API")
+		return 0, 0, err
 	}
 
-	var cpuUsage, cpuLimit uint64
-
-	for _, pathPattern := range cgroupPaths {
-		matches, _ := filepath.Glob(pathPattern)
-		if len(matches) > 0 {
-			// Check if this is cgroup v2 by looking for cpu.stat file
-			_, err := os.Stat(filepath.Join(matches[0], "cpu.stat"))
-			isCgroupV2 := err == nil
-
-			if isCgroupV2 {
-				// Read CPU usage from cgroup v2
-				statData, err := os.ReadFile(filepath.Join(matches[0], "cpu.stat"))
-				if err == nil {
-					// Parse the cpu.stat file to extract usage_usec
-					scanner := bufio.NewScanner(strings.NewReader(string(statData)))
-					for scanner.Scan() {
-						line := scanner.Text()
-						if strings.HasPrefix(line, "usage_usec") {
-							fields := strings.Fields(line)
-							if len(fields) >= 2 {
-								// Convert microseconds to nanoseconds for consistency with cgroup v1
-								usageMicros, _ := strconv.ParseUint(fields[1], 10, 64)
-								cpuUsage = usageMicros * 1000
-								break
-							}
-						}
-					}
-				}
-
-				// Read CPU limit from cgroup v2
-				maxData, err := os.ReadFile(filepath.Join(matches[0], "cpu.max"))
-				if err == nil {
-					fields := strings.Fields(string(maxData))
-					if len(fields) >= 2 && fields[0] != "max" {
-						quota, _ := strconv.ParseInt(fields[0], 10, 64)
-						period, _ := strconv.ParseUint(fields[1], 10, 64)
-						if quota > 0 && period > 0 {
-							cpuLimit = uint64(quota) * 100 / period
-						}
-					}
-				}
-			} else {
-				// Read CPU usage from cgroup v1
-				usageData, err := os.ReadFile(filepath.Join(matches[0], "cpuacct.usage"))
-				if err == nil {
-					cpuUsage, _ = strconv.ParseUint(strings.TrimSpace(string(usageData)), 10, 64)
-				}
-
-				// Read CPU limit (quota and period) from cgroup v1
-				quotaData, err := os.ReadFile(filepath.Join(matches[0], "cpu.cfs_quota_us"))
-				if err == nil {
-					quota, _ := strconv.ParseInt(strings.TrimSpace(string(quotaData)), 10, 64)
-					if quota > 0 {
-						periodData, err := os.ReadFile(filepath.Join(matches[0], "cpu.cfs_period_us"))
-						if err == nil {
-							period, _ := strconv.ParseUint(strings.TrimSpace(string(periodData)), 10, 64)
-							if period > 0 {
-								cpuLimit = uint64(quota) * 100 / period
-							}
-						}
-					}
-				}
-			}
-
-			// If we couldn't get the limit, use a default value
-			if cpuLimit == 0 {
-				cpuLimit = 100 * 100000 // Assume 1 CPU = 100%
-			}
-
-			return cpuUsage, cpuLimit, nil
-		}
-	}
-
-	return 0, 0, fmt.Errorf("failed to find cgroup CPU metrics for container %s", containerID)
-}
-
-// getMemoryMetrics reads memory usage and limit from cgroup files
-func getMemoryMetrics(containerID string) (uint64, uint64, error) {
-	// Try different possible cgroup paths for various container runtimes (docker, containerd, crio)
-	cgroupPaths := []string{
-		// Docker paths
-		fmt.Sprintf("/sys/fs/cgroup/memory/docker/%s", containerID),
-		fmt.Sprintf("/sys/fs/cgroup/memory/kubepods/*/docker-%s.scope", containerID),
-		fmt.Sprintf("/sys/fs/cgroup/memory/kubepods/*/*/docker-%s.scope", containerID),
-		fmt.Sprintf("/sys/fs/cgroup/memory/kubepods.slice/kubepods-*.slice/docker-%s.scope", containerID),
-
-		// Containerd paths
-		fmt.Sprintf("/sys/fs/cgroup/memory/kubepods/*/containerd-%s.scope", containerID),
-		fmt.Sprintf("/sys/fs/cgroup/memory/kubepods/*/*/containerd-%s.scope", containerID),
-		fmt.Sprintf("/sys/fs/cgroup/memory/kubepods.slice/kubepods-*.slice/containerd-%s.scope", containerID),
-
-		// CRI-O paths
-		fmt.Sprintf("/sys/fs/cgroup/memory/kubepods/*/crio-%s.scope", containerID),
-		fmt.Sprintf("/sys/fs/cgroup/memory/kubepods/*/*/crio-%s.scope", containerID),
-		fmt.Sprintf("/sys/fs/cgroup/memory/kubepods.slice/kubepods-*.slice/crio-%s.scope", containerID),
-
-		// Unified cgroup v2 paths (for all runtimes)
-		fmt.Sprintf("/sys/fs/cgroup/kubepods.slice/kubepods-*.slice/*/%s", containerID),
-	}
-
-	var memUsage, memLimit uint64
-
-	for _, pathPattern := range cgroupPaths {
-		matches, _ := filepath.Glob(pathPattern)
-		if len(matches) > 0 {
-			// Check if this is cgroup v2 by looking for memory.stat file
-			_, err := os.Stat(filepath.Join(matches[0], "memory.stat"))
-			isCgroupV2 := err == nil
-
-			if isCgroupV2 {
-				// Read memory usage from cgroup v2
-				usageData, err := os.ReadFile(filepath.Join(matches[0], "memory.current"))
-				if err == nil {
-					memUsage, _ = strconv.ParseUint(strings.TrimSpace(string(usageData)), 10, 64)
-				}
-
-				// Read memory limit from cgroup v2
-				limitData, err := os.ReadFile(filepath.Join(matches[0], "memory.max"))
-				if err == nil {
-					limitStr := strings.TrimSpace(string(limitData))
-					if limitStr != "max" { // "max" means no limit
-						memLimit, _ = strconv.ParseUint(limitStr, 10, 64)
-					}
-				}
-			} else {
-				// Read memory usage from cgroup v1
-				usageData, err := os.ReadFile(filepath.Join(matches[0], "memory.usage_in_bytes"))
-				if err == nil {
-					memUsage, _ = strconv.ParseUint(strings.TrimSpace(string(usageData)), 10, 64)
-				}
-
-				// Read memory limit from cgroup v1
-				limitData, err := os.ReadFile(filepath.Join(matches[0], "memory.limit_in_bytes"))
-				if err == nil {
-					memLimit, _ = strconv.ParseUint(strings.TrimSpace(string(limitData)), 10, 64)
-				}
-			}
-
-			// If the limit is too high (e.g., 9223372036854771712), it's effectively unlimited
-			// In that case, use the host's total memory as a reference
-			if memLimit > 1<<42 { // 4TB, an arbitrary high value
-				totalMemData, err := os.ReadFile("/proc/meminfo")
-				if err == nil {
-					scanner := bufio.NewScanner(strings.NewReader(string(totalMemData)))
-					for scanner.Scan() {
-						line := scanner.Text()
-						if strings.HasPrefix(line, "MemTotal:") {
-							fields := strings.Fields(line)
-							if len(fields) >= 2 {
-								memTotal, _ := strconv.ParseUint(fields[1], 10, 64)
-								memLimit = memTotal * 1024 // Convert from KB to bytes
-								break
-							}
-						}
-					}
-				}
-			}
-
-			// If we still don't have a valid limit, use a default
-			if memLimit == 0 {
-				memLimit = 8 * 1024 * 1024 * 1024 // 8GB default
-			}
-
-			return memUsage, memLimit, nil
-		}
-	}
-
-	return 0, 0, fmt.Errorf("failed to find cgroup memory metrics for container %s", containerID)
+	return cpuPercent, memPercent, nil
 }
 
 func monitorResourceUsage(ctx context.Context, config *Config) {
+	logger.Info("Starting resource usage monitoring",
+		"period", config.MonitoringPeriod,
+		"cpuThreshold", config.CPUThreshold,
+		"memThreshold", config.MemoryThreshold)
+
 	ticker := time.NewTicker(config.MonitoringPeriod)
 	defer ticker.Stop()
 
 	var lastCPUTime time.Time
+
+	// Adjust thresholds based on QoS class
+	cpuThreshold := config.CPUThreshold
+	memThreshold := config.MemoryThreshold
+
+	logger.V(1).Info("Using thresholds for profiling",
+		"cpuThreshold", cpuThreshold,
+		"memThreshold", memThreshold)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Get container metrics using cgroup
-			cpuPercent, memoryPercent, err := getCgroupMetrics(config)
+			// Get container metrics using kubelet API
+			cpuPercent, memoryPercent, err := getMetrics(config)
 			if err != nil {
-				log.Printf("Error getting container metrics: %v", err)
-
-				// If container ID is not available or has changed, try to find it again
-				if config.ContainerID == "" || strings.Contains(err.Error(), "failed to find cgroup") {
-					containerID, err := findContainerID(config.TargetContainer, config.K8sClient, config.Namespace, config.PodName)
-					if err != nil {
-						log.Printf("Failed to find container ID: %v", err)
-					} else {
-						config.ContainerID = containerID
-						log.Printf("Updated container ID for %s: %s", config.TargetContainer, containerID)
-					}
-				}
+				logger.Error(err, "Error getting container metrics")
 				continue
 			}
 
-			log.Printf("Resource usage - CPU: %.2f%%, Memory: %.2f%%", cpuPercent, memoryPercent)
+			// Log at different levels based on importance
+			if cpuPercent >= float64(cpuThreshold)*0.8 || memoryPercent >= float64(memThreshold)*0.8 {
+				// If approaching thresholds, log at info level
+				logger.Info("Resource usage approaching thresholds",
+					"cpu", fmt.Sprintf("%.2f%%", cpuPercent),
+					"cpuThreshold", cpuThreshold,
+					"memory", fmt.Sprintf("%.2f%%", memoryPercent),
+					"memThreshold", memThreshold)
+			} else {
+				// Otherwise log at debug level
+				logger.V(1).Info("Resource usage",
+					"cpu", fmt.Sprintf("%.2f%%", cpuPercent),
+					"memory", fmt.Sprintf("%.2f%%", memoryPercent))
+			}
 
-			// Check if thresholds are exceeded
-			cpuThresholdExceeded := cpuPercent >= float64(config.CPUThreshold)
-			memThresholdExceeded := memoryPercent >= float64(config.MemoryThreshold)
+			// Check if thresholds are exceeded, using QoS-adjusted thresholds
+			cpuThresholdExceeded := cpuPercent >= float64(cpuThreshold)
+			memThresholdExceeded := memoryPercent >= float64(memThreshold)
+
+			// Log threshold status at debug level
+			logger.V(2).Info("Threshold status",
+				"cpuExceeded", cpuThresholdExceeded,
+				"memExceeded", memThresholdExceeded)
 
 			// Avoid collecting profiles too frequently
 			now := time.Now()
 			if lastCPUTime.IsZero() || now.Sub(lastCPUTime) > time.Minute*5 {
 				if cpuThresholdExceeded {
-					log.Printf("CPU threshold exceeded (%.2f%% >= %d%%), collecting CPU profile", cpuPercent, config.CPUThreshold)
-					if err := collectAndUploadProfile(ctx, config, "cpu", fmt.Sprintf("CPU threshold exceeded: %.2f%%", cpuPercent)); err != nil {
-						log.Printf("Failed to collect CPU profile: %v", err)
+					logger.V(0).Info("CPU threshold exceeded, collecting CPU profile",
+						"cpuUsage", fmt.Sprintf("%.2f%%", cpuPercent),
+						"threshold", cpuThreshold)
+					if err := collectAndUploadProfile(ctx, config, "cpu",
+						fmt.Sprintf("CPU threshold exceeded: %.2f%%", cpuPercent)); err != nil {
+						logger.Error(err, "Failed to collect CPU profile")
+					} else {
+						logger.Info("Successfully collected CPU profile")
 					}
 					lastCPUTime = now
+				} else {
+					logger.V(2).Info("CPU threshold not exceeded or cooldown period active",
+						"cpuUsage", fmt.Sprintf("%.2f%%", cpuPercent),
+						"threshold", cpuThreshold,
+						"timeSinceLastProfile", now.Sub(lastCPUTime))
 				}
 			}
 
 			// For memory, we'll use a similar approach
 			if memThresholdExceeded {
-				log.Printf("Memory threshold exceeded (%.2f%% >= %d%%), collecting heap profile", memoryPercent, config.MemoryThreshold)
-				if err := collectAndUploadProfile(ctx, config, "heap", fmt.Sprintf("Memory threshold exceeded: %.2f%%", memoryPercent)); err != nil {
-					log.Printf("Failed to collect heap profile: %v", err)
+				logger.V(0).Info("Memory threshold exceeded, collecting heap profile",
+					"memoryUsage", fmt.Sprintf("%.2f%%", memoryPercent),
+					"threshold", memThreshold)
+				if err := collectAndUploadProfile(ctx, config, "heap",
+					fmt.Sprintf("Memory threshold exceeded: %.2f%%", memoryPercent)); err != nil {
+					logger.Error(err, "Failed to collect heap profile")
+				} else {
+					logger.Info("Successfully collected heap profile")
 				}
+			} else {
+				logger.V(2).Info("Memory threshold not exceeded",
+					"memoryUsage", fmt.Sprintf("%.2f%%", memoryPercent),
+					"threshold", memThreshold)
 			}
 		}
 	}
 }
 
 func collectAndUploadProfile(ctx context.Context, config *Config, profileType string, reason string) (err error) {
-	log.Printf("Collecting %s profile for %s", profileType, reason)
+	logger.Info("Starting profile collection", "type", profileType, "reason", reason)
+	logger.V(1).Info("Profile collection details",
+		"type", profileType,
+		"container", config.TargetContainer,
+		"pod", config.PodName,
+		"namespace", config.Namespace)
+
 	// Create a temporary directory for the profile
 	tempDir, err := os.MkdirTemp("", "pprof-*")
 	if err != nil {
+		logger.Error(err, "Failed to create temporary directory")
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}
 	defer func() {
+		logger.V(2).Info("Cleaning up temporary directory", "dir", tempDir)
 		if removeErr := os.RemoveAll(tempDir); removeErr != nil {
-			log.Printf("Error removing temporary directory %s: %v", tempDir, removeErr)
+			logger.Error(removeErr, "Error removing temporary directory", "dir", tempDir)
 			if err == nil {
 				err = removeErr
 			}
@@ -551,20 +554,23 @@ func collectAndUploadProfile(ctx context.Context, config *Config, profileType st
 	profileFilename := fmt.Sprintf("%s-%s-%s-%s.pprof", profileType, config.PodName, config.TargetContainer, timestamp)
 	profilePath := filepath.Join(tempDir, profileFilename)
 
+	logger.V(1).Info("Generated profile path", "filename", profileFilename, "path", profilePath)
+
 	// Collect the profile using pprof
-	// In a real implementation, we would use the pprof HTTP endpoint of the target process
-	log.Printf("Collecting %s profile to %s", profileType, profilePath)
+	logger.Info("Collecting profile to file", "type", profileType)
 
 	// Check if we have a scrap URL
 	if config.ScrapTarget.ScrapeURL != "" {
-		log.Printf("Using scrap URL: %s", config.ScrapTarget.ScrapeURL)
+		logger.V(1).Info("Using scrap URL for profile collection", "url", config.ScrapTarget.ScrapeURL)
 
 		// Construct the URL with profile type and duration
-		url := fmt.Sprintf("%s/%s?seconds=%d", config.ScrapTarget.ScrapeURL, profileType, config.ProfileDuration)
+		url := fmt.Sprintf("%s/%s", config.ScrapTarget.ScrapeURL, profileType)
+		logger.V(1).Info("Constructed profile URL", "url", url, "duration", config.ProfileDuration)
 
 		// Create a new HTTP request
 		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 		if err != nil {
+			logger.Error(err, "Failed to create HTTP request", "url", url)
 			return fmt.Errorf("failed to create HTTP request: %w", err)
 		}
 
@@ -574,22 +580,31 @@ func collectAndUploadProfile(ctx context.Context, config *Config, profileType st
 			password := config.ScrapTarget.Auth.BasicAuth.Password
 			if username != "" && password != "" {
 				req.SetBasicAuth(username, password)
+				logger.V(1).Info("Added basic authentication to request")
+			} else {
+				logger.V(1).Info("No basic authentication credentials provided")
 			}
+		} else {
+			logger.V(2).Info("No authentication configuration found")
 		}
 
 		// Create an HTTP client
 		client := &http.Client{
 			Timeout: time.Duration(config.ProfileDuration+10) * time.Second,
 		}
+		logger.V(2).Info("Created HTTP client", "timeout", client.Timeout)
 
 		// Send the request
+		logger.Info("Sending HTTP request to collect profile", "url", url)
 		resp, err := client.Do(req)
 		if err != nil {
+			logger.Error(err, "Failed to send HTTP request", "url", url)
 			return fmt.Errorf("failed to send HTTP request: %w", err)
 		}
 		defer func() {
+			logger.V(2).Info("Closing response body")
 			if closeErr := resp.Body.Close(); closeErr != nil {
-				log.Printf("Error closing response body: %v", closeErr)
+				logger.Error(closeErr, "Error closing response body")
 				if err == nil {
 					err = closeErr
 				}
@@ -598,17 +613,22 @@ func collectAndUploadProfile(ctx context.Context, config *Config, profileType st
 
 		// Check the response status
 		if resp.StatusCode != http.StatusOK {
+			logger.Error(nil, "Received non-OK response", "status", resp.Status, "url", url)
 			return fmt.Errorf("received non-OK response: %s", resp.Status)
 		}
+		logger.V(1).Info("Received successful response", "status", resp.Status)
 
 		// Create the profile file
+		logger.V(1).Info("Creating profile file", "path", profilePath)
 		file, err := os.Create(profilePath)
 		if err != nil {
+			logger.Error(err, "Failed to create profile file", "path", profilePath)
 			return fmt.Errorf("failed to create profile file: %w", err)
 		}
 		defer func() {
+			logger.V(2).Info("Closing profile file", "path", profilePath)
 			if closeErr := file.Close(); closeErr != nil {
-				log.Printf("Error closing profile file %s: %v", profilePath, closeErr)
+				logger.Error(closeErr, "Error closing profile file", "path", profilePath)
 				if err == nil {
 					err = closeErr
 				}
@@ -616,14 +636,17 @@ func collectAndUploadProfile(ctx context.Context, config *Config, profileType st
 		}()
 
 		// Copy the response body to the file
-		_, err = io.Copy(file, resp.Body)
+		logger.V(1).Info("Writing profile data to file", "path", profilePath)
+		bytesWritten, err := io.Copy(file, resp.Body)
 		if err != nil {
+			logger.Error(err, "Failed to write profile data", "path", profilePath)
 			return fmt.Errorf("failed to write profile data: %w", err)
 		}
+		logger.V(1).Info("Profile data written to file", "bytes", bytesWritten, "path", profilePath)
 
-		log.Printf("Successfully collected profile from %s", url)
+		logger.Info("Successfully collected profile", "type", profileType, "url", url)
 	} else {
-		log.Printf("No Scrapping done. No scrap url found.")
+		logger.V(0).Info("No scraping done - no scrap URL found")
 		return fmt.Errorf("no scrap url found")
 	}
 
@@ -631,44 +654,65 @@ func collectAndUploadProfile(ctx context.Context, config *Config, profileType st
 	s3Key := profileFilename
 	if config.S3PathPrefix != "" {
 		s3Key = filepath.Join(config.S3PathPrefix, profileFilename)
+		logger.V(1).Info("Using S3 path prefix", "prefix", config.S3PathPrefix, "key", s3Key)
+	} else {
+		logger.V(1).Info("No S3 path prefix specified, using filename as key", "key", s3Key)
 	}
 
+	logger.Info("Uploading profile to S3", "bucket", config.S3Bucket, "key", s3Key)
 	if uploadErr := uploadToS3(ctx, config, profilePath, s3Key); uploadErr != nil {
+		logger.Error(uploadErr, "Failed to upload profile to S3",
+			"bucket", config.S3Bucket,
+			"key", s3Key,
+			"path", profilePath)
 		return fmt.Errorf("failed to upload profile to S3: %w", uploadErr)
 	}
 
-	log.Printf("Successfully collected and uploaded %s profile to s3://%s/%s", profileType, config.S3Bucket, s3Key)
+	logger.Info("Successfully collected and uploaded profile",
+		"type", profileType,
+		"bucket", config.S3Bucket,
+		"key", s3Key)
 	return nil
 }
 
 func uploadToS3(ctx context.Context, config *Config, filePath, s3Key string) error {
+	logger.V(1).Info("Starting S3 upload process", "filePath", filePath, "s3Key", s3Key)
+
 	// Create AWS config
 	var awsConfig aws.Config
 	var err error
 
 	if config.AWSAccessKeyID != "" && config.AWSSecretKey != "" {
 		// Use provided credentials
+		logger.V(1).Info("Using provided AWS credentials")
 		awsConfig, err = config.LoadWithCredentials(ctx)
 	} else {
 		// Use default credentials provider chain
+		logger.V(1).Info("Using default AWS credentials provider chain")
 		awsConfig, err = config.LoadDefaultConfig(ctx)
 	}
 
 	if err != nil {
+		logger.Error(err, "Failed to load AWS config", "region", config.S3Region)
 		return fmt.Errorf("failed to load AWS config: %w", err)
 	}
+	logger.V(2).Info("AWS config loaded successfully", "region", config.S3Region)
 
 	// Create S3 client
 	s3Client := s3.NewFromConfig(awsConfig)
+	logger.V(2).Info("S3 client created")
 
 	// Open the file
+	logger.V(2).Info("Opening file for upload", "path", filePath)
 	file, err := os.Open(filePath)
 	if err != nil {
+		logger.Error(err, "Failed to open file", "path", filePath)
 		return fmt.Errorf("failed to open file: %w", err)
 	}
 	defer func() {
+		logger.V(2).Info("Closing file", "path", filePath)
 		if closeErr := file.Close(); closeErr != nil {
-			log.Printf("Error closing file %s: %v", filePath, closeErr)
+			logger.Error(closeErr, "Error closing file", "path", filePath)
 			if err == nil {
 				err = closeErr
 			}
@@ -676,15 +720,25 @@ func uploadToS3(ctx context.Context, config *Config, filePath, s3Key string) err
 	}()
 
 	// Upload the file
+	logger.Info("Uploading file to S3", "bucket", config.S3Bucket, "key", s3Key)
+	startTime := time.Now()
 	_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(config.S3Bucket),
 		Key:    aws.String(s3Key),
 		Body:   file,
 	})
 	if err != nil {
+		logger.Error(err, "Failed to upload file to S3",
+			"bucket", config.S3Bucket,
+			"key", s3Key,
+			"duration", time.Since(startTime))
 		return fmt.Errorf("failed to upload file to S3: %w", err)
 	}
 
+	logger.Info("Successfully uploaded file to S3",
+		"bucket", config.S3Bucket,
+		"key", s3Key,
+		"duration", time.Since(startTime))
 	return nil
 }
 
@@ -706,16 +760,76 @@ func (c *Config) LoadDefaultConfig(ctx context.Context) (aws.Config, error) {
 }
 
 func main() {
-	log.Println("Starting pprof sidecar with cgroup metrics (supports Docker, containerd, CRI-O, and both cgroup v1/v2)")
+	// Initialize structured logger
+	zapConfig := zap.NewProductionConfig()
+	zapConfig.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	zapConfig.Level = zap.NewAtomicLevelAt(zapcore.InfoLevel)
+
+	// Enable development mode if requested
+	logLevel := os.Getenv("LOG_LEVEL")
+	if logLevel != "" {
+		switch logLevel {
+		case "debug":
+			zapConfig.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
+		case "info":
+			zapConfig.Level = zap.NewAtomicLevelAt(zapcore.InfoLevel)
+		case "warn", "warning":
+			zapConfig.Level = zap.NewAtomicLevelAt(zapcore.WarnLevel)
+		case "error":
+			zapConfig.Level = zap.NewAtomicLevelAt(zapcore.ErrorLevel)
+		case "panic":
+			zapConfig.Level = zap.NewAtomicLevelAt(zapcore.PanicLevel)
+		default:
+			fmt.Printf("Unknown log level: %s, using default (info)\n", logLevel)
+		}
+	}
+
+	// For backward compatibility
+	if os.Getenv("DEBUG") == "true" {
+		zapConfig = zap.NewDevelopmentConfig()
+		zapConfig.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
+	}
+
+	zapLog, err := zapConfig.Build()
+	if err != nil {
+		fmt.Printf("Error initializing logger: %v\n", err)
+		os.Exit(1)
+	}
+	defer func(zapLog *zap.Logger) {
+		err := zapLog.Sync()
+		if err != nil {
+			fmt.Printf("Error syncing logger: %v\n", err)
+		}
+	}(zapLog)
+
+	// Set global logger
+	logger = zapr.NewLogger(zapLog)
+
+	logger.Info("Starting pprof sidecar with kubelet API metrics (metrics.k8s.io) and QoS support",
+		"runtimes", "Docker, containerd, CRI-O")
 
 	// Load configuration from environment variables
 	config, err := loadConfig()
 	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		logger.Error(err, "Failed to load configuration")
+		os.Exit(1)
 	}
 
-	log.Printf("Configuration loaded: target=%s, namespace=%s, pod=%s, CPU threshold=%d%%, Memory threshold=%d%%, Profile duration=%ds, Monitoring period=%s",
-		config.TargetContainer, config.Namespace, config.PodName, config.CPUThreshold, config.MemoryThreshold, config.ProfileDuration, config.MonitoringPeriod)
+	logger.Info("Configuration loaded",
+		"target", config.TargetContainer,
+		"namespace", config.Namespace,
+		"pod", config.PodName,
+		"podUID", config.PodUID,
+		"cpuThreshold", config.CPUThreshold,
+		"memoryThreshold", config.MemoryThreshold,
+		"profileDuration", config.ProfileDuration,
+		"monitoringPeriod", config.MonitoringPeriod)
+
+	logger.V(1).Info("Detailed configuration",
+		"s3Bucket", config.S3Bucket,
+		"s3Region", config.S3Region,
+		"s3PathPrefix", config.S3PathPrefix,
+		"scrapTarget", config.ScrapTarget)
 
 	// Create context that can be cancelled
 	ctx, cancel := context.WithCancel(context.Background())
@@ -726,7 +840,7 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigCh
-		log.Printf("Received signal %v, shutting down", sig)
+		logger.Info("Received termination signal, shutting down", "signal", sig)
 		cancel()
 	}()
 

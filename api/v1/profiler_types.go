@@ -38,11 +38,6 @@ type ProfilerSpec struct {
 	// +kubebuilder:validation:Maximum=100
 	MemoryThreshold *int32 `json:"memoryThreshold,omitempty"`
 
-	// Duration in seconds to collect the profile
-	// +optional
-	// +kubebuilder:default=30
-	ProfileDuration int32 `json:"profileDuration,omitempty"`
-
 	// Monitoring period in seconds to check resource usage
 	// +optional
 	// +kubebuilder:default=15

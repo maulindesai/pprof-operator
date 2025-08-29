@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: default
+  name: pprof-sample-app
+  labels:
+    app: pprof-sample-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pprof-sample-app
+  template:
+    metadata:
+      labels:
+        app: pprof-sample-app
+      annotations:
+        "profiler.pprof.dev/enable": "true"
+        "profiler.pprof.dev/target_container": "app"
+        "profiler.pprof.dev/scrape_url": "http://localhost:8080/debug/pprof"
+    spec:
+      containers:
+      - name: app
+        image: sample-app:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+      serviceAccountName: "pprof-sidecar"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pprof-sample-app
+  labels:
+    app: pprof-sample-app
+spec:
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  selector:
+    app: pprof-sample-app

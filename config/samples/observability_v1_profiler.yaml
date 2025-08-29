@@ -6,4 +6,23 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: profiler-sample
 spec:
-  # TODO(user): Add fields here
+  # CPU threshold in percentage (0-100) that triggers profiling
+  cpuThreshold: 70
+
+  # Memory threshold in percentage (0-100) that triggers profiling
+  memoryThreshold: 80
+
+  # Monitoring period in seconds to check resource usage
+  monitoringPeriod: 5
+
+  # S3 bucket to upload profiles to (required)
+  s3Bucket: "profiler-bucket"
+
+  # S3 region (default: us-east-1)
+  s3Region: "us-west-2"
+
+  # S3 path prefix for storing profiles
+  s3PathPrefix: "profiles/sample-app"
+
+  # AWS credentials secret name
+  awsCredentialsSecret: "aws-credentials"

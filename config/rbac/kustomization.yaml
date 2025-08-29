@@ -25,4 +25,6 @@ resources:
 - profiler_admin_role.yaml
 - profiler_editor_role.yaml
 - profiler_viewer_role.yaml
+# profiler sidecar pod permission for rbac
+- profiler_sidecar_rbac.yaml
 

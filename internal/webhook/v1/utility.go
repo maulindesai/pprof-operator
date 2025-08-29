@@ -1,4 +1,4 @@
-package controller
+package v1
 
 import (
 	"fmt"
@@ -7,57 +7,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// hasCgroupVolume checks if the pod already has a cgroup volume
-func hasCgroupVolume(volumes []corev1.Volume) bool {
-	for _, vol := range volumes {
-		if vol.Name == "cgroup" {
-			return true
-		}
-	}
-	return false
-}
-
-// createCgroupVolume creates a new cgroup volume for the pod
-func createCgroupVolume() corev1.Volume {
-	return corev1.Volume{
-		Name: "cgroup",
-		VolumeSource: corev1.VolumeSource{
-			HostPath: &corev1.HostPathVolumeSource{
-				Path: "/sys/fs/cgroup",
-				Type: func() *corev1.HostPathType {
-					t := corev1.HostPathDirectory
-					return &t
-				}(),
-			},
-		},
-	}
-}
-
-// isCgroupVolumeNeeded checks if any container in the pod is using the cgroup volume
-func isCgroupVolumeNeeded(pod *corev1.Pod) bool {
-	for _, container := range pod.Spec.Containers {
-		for _, volumeMount := range container.VolumeMounts {
-			if volumeMount.Name == "cgroup" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// removeCgroupVolume removes the cgroup volume from the list of volumes
-func removeCgroupVolume(volumes []corev1.Volume) []corev1.Volume {
-	var updatedVolumes []corev1.Volume
-	for _, volume := range volumes {
-		if volume.Name != "cgroup" {
-			updatedVolumes = append(updatedVolumes, volume)
-		}
-	}
-	return updatedVolumes
-}
-
-// hasSidecar checks if a container with the given name exists in the list of containers
-func hasSidecar(containers []corev1.Container, name string) bool {
+// HasSidecar checks if a container with the given name exists in the list of containers
+func HasSidecar(containers []corev1.Container, name string) bool {
 	for _, container := range containers {
 		if container.Name == name {
 			return true
@@ -167,7 +118,7 @@ func getAWSConfiguration(profiler *observabilityv1.Profiler, logger logr.Logger)
 	return envVars
 }
 
-// getScrapTargetConfiguration returns environment variables for scraping target configuration
+// getScrapeTargetConfiguration returns environment variables for scraping target configuration
 // It reads the scrape URL and authentication settings from pod annotations first,
 // then falls back to the CRD values if annotations are not present
 // Parameters:
@@ -177,21 +128,21 @@ func getAWSConfiguration(profiler *observabilityv1.Profiler, logger logr.Logger)
 //
 // Returns:
 //   - []corev1.EnvVar: Environment variables for scrape target configuration
-func getScrapTargetConfiguration(profiler *observabilityv1.Profiler, pod *corev1.Pod, logger logr.Logger) []corev1.EnvVar {
+func getScrapeTargetConfiguration(profiler *observabilityv1.Profiler, pod *corev1.Pod, logger logr.Logger) []corev1.EnvVar {
 	var envVars []corev1.EnvVar
-	logger.V(1).Info("Configuring ScrapTarget")
+	logger.V(1).Info("Configuring ScrapeTarget")
 
 	// Configure scrape URL
-	envVars = append(envVars, getScrapTargetURL(profiler, pod, logger)...)
+	envVars = append(envVars, getScrapeTargetURL(profiler, pod, logger)...)
 
 	// Configure authentication
-	authType := getScrapTargetAuthType(profiler, pod, logger)
+	authType := getScrapeTargetAuthType(profiler, pod, logger)
 	if authType.Value != "" {
 		envVars = append(envVars, authType)
 
 		// Configure basic auth if specified
 		if authType.Value == string(observabilityv1.AuthTypeBasic) {
-			envVars = append(envVars, getScrapTargetBasicAuth(profiler, pod, logger)...)
+			envVars = append(envVars, getScrapeTargetBasicAuth(profiler, pod, logger)...)
 		} else {
 			logger.V(1).Info("No authentication configured or not supported", "authType", authType.Value)
 		}
@@ -200,7 +151,7 @@ func getScrapTargetConfiguration(profiler *observabilityv1.Profiler, pod *corev1
 	return envVars
 }
 
-// getScrapTargetAuthType determines the authentication type for scraping target
+// getScrapeTargetAuthType determines the authentication type for scraping target
 // It first checks for an annotation-based auth type, then falls back to the CRD value
 // Parameters:
 //   - profiler: The Profiler CR containing auth type configuration
@@ -209,13 +160,13 @@ func getScrapTargetConfiguration(profiler *observabilityv1.Profiler, pod *corev1
 //
 // Returns:
 //   - corev1.EnvVar: The authentication type environment variable
-func getScrapTargetAuthType(profiler *observabilityv1.Profiler, pod *corev1.Pod, logger logr.Logger) corev1.EnvVar {
+func getScrapeTargetAuthType(profiler *observabilityv1.Profiler, pod *corev1.Pod, logger logr.Logger) corev1.EnvVar {
 	// First check for annotation-based auth type
-	authTypeAnnotation, hasAuthTypeAnnotation := pod.Annotations[AnnotationScrapAuthType]
+	authTypeAnnotation, hasAuthTypeAnnotation := pod.Annotations[AnnotationScrapeAuthType]
 	if hasAuthTypeAnnotation && authTypeAnnotation != "" {
 		logger.Info("Using auth type from annotation",
 			"value", authTypeAnnotation,
-			"annotation", AnnotationScrapAuthType)
+			"annotation", AnnotationScrapeAuthType)
 		return corev1.EnvVar{
 			Name:  "AUTH_TYPE",
 			Value: authTypeAnnotation,
@@ -240,7 +191,7 @@ func getScrapTargetAuthType(profiler *observabilityv1.Profiler, pod *corev1.Pod,
 	}
 }
 
-// getScrapTargetURL returns environment variables for the scrape URL configuration
+// getScrapeTargetURL returns environment variables for the scrape URL configuration
 // It first checks for a URL annotation, then falls back to the CRD value
 // Parameters:
 //   - profiler: The Profiler CR containing scrape URL configuration
@@ -249,18 +200,18 @@ func getScrapTargetAuthType(profiler *observabilityv1.Profiler, pod *corev1.Pod,
 //
 // Returns:
 //   - []corev1.EnvVar: Environment variables for scrape URL configuration
-func getScrapTargetURL(profiler *observabilityv1.Profiler, pod *corev1.Pod, logger logr.Logger) []corev1.EnvVar {
+func getScrapeTargetURL(profiler *observabilityv1.Profiler, pod *corev1.Pod, logger logr.Logger) []corev1.EnvVar {
 	var envVars []corev1.EnvVar
 
 	// Check for annotation-based URL
-	scrapURLAnnotation, hasScrapURLAnnotation := pod.Annotations[AnnotationScrapURL]
-	if hasScrapURLAnnotation && scrapURLAnnotation != "" {
+	scrapeURLAnnotation, hasScrapeURLAnnotation := pod.Annotations[AnnotationScrapeURL]
+	if hasScrapeURLAnnotation && scrapeURLAnnotation != "" {
 		logger.Info("Using scrape URL from annotation",
-			"value", scrapURLAnnotation,
-			"annotation", AnnotationScrapURL)
+			"value", scrapeURLAnnotation,
+			"annotation", AnnotationScrapeURL)
 		envVars = append(envVars, corev1.EnvVar{
-			Name:  "SCRAP_URL",
-			Value: scrapURLAnnotation,
+			Name:  "SCRAPE_URL",
+			Value: scrapeURLAnnotation,
 		})
 		return envVars
 	}
@@ -269,7 +220,7 @@ func getScrapTargetURL(profiler *observabilityv1.Profiler, pod *corev1.Pod, logg
 	if profiler.Spec.ScrapTarget != nil && profiler.Spec.ScrapTarget.ScrapeURL != "" {
 		logger.Info("Using scrape URL from CRD", "value", profiler.Spec.ScrapTarget.ScrapeURL)
 		envVars = append(envVars, corev1.EnvVar{
-			Name:  "SCRAP_URL",
+			Name:  "SCRAPE_URL",
 			Value: profiler.Spec.ScrapTarget.ScrapeURL,
 		})
 		return envVars
@@ -279,7 +230,7 @@ func getScrapTargetURL(profiler *observabilityv1.Profiler, pod *corev1.Pod, logg
 	return envVars
 }
 
-// getScrapTargetBasicAuth returns environment variables for basic authentication
+// getScrapeTargetBasicAuth returns environment variables for basic authentication
 // It first checks for annotation-based auth, then falls back to the CRD values
 // Parameters:
 //   - profiler: The Profiler CR containing auth configuration
@@ -288,7 +239,7 @@ func getScrapTargetURL(profiler *observabilityv1.Profiler, pod *corev1.Pod, logg
 //
 // Returns:
 //   - []corev1.EnvVar: Environment variables for basic authentication
-func getScrapTargetBasicAuth(profiler *observabilityv1.Profiler, pod *corev1.Pod, logger logr.Logger) []corev1.EnvVar {
+func getScrapeTargetBasicAuth(profiler *observabilityv1.Profiler, pod *corev1.Pod, logger logr.Logger) []corev1.EnvVar {
 	// Check annotation-based direct auth first
 	if username, password, ok := getAnnotationAuth(pod); ok {
 		logger.Info("Using basic auth credentials from annotations")
@@ -337,25 +288,25 @@ type secretAuth struct {
 // getAnnotationAuth extracts username and password from pod annotations
 // Returns username, password, and a boolean indicating if both are present
 func getAnnotationAuth(pod *corev1.Pod) (username, password string, ok bool) {
-	username, hasUsername := pod.Annotations[AnnotationScrapAuthUsername]
-	password, hasPassword := pod.Annotations[AnnotationScrapAuthPassword]
+	username, hasUsername := pod.Annotations[AnnotationScrapeAuthUsername]
+	password, hasPassword := pod.Annotations[AnnotationScrapeAuthPassword]
 	return username, password, hasUsername && hasPassword && username != "" && password != ""
 }
 
 // getSecretAnnotationAuth extracts secret reference from pod annotations
 // Returns a secretAuth struct and a boolean indicating if the secret is specified
 func getSecretAnnotationAuth(pod *corev1.Pod) (*secretAuth, bool) {
-	secret, hasSecret := pod.Annotations[AnnotationScrapAuthSecret]
+	secret, hasSecret := pod.Annotations[AnnotationScrapeAuthSecret]
 	if !hasSecret || secret == "" {
 		return nil, false
 	}
 
-	usernameKey := pod.Annotations[AnnotationScrapAuthUsernameKey]
+	usernameKey := pod.Annotations[AnnotationScrapeAuthUsernameKey]
 	if usernameKey == "" {
 		usernameKey = "username"
 	}
 
-	passwordKey := pod.Annotations[AnnotationScrapAuthPasswordKey]
+	passwordKey := pod.Annotations[AnnotationScrapeAuthPasswordKey]
 	if passwordKey == "" {
 		passwordKey = "password"
 	}
