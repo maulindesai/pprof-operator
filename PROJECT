@@ -6,6 +6,8 @@ cliVersion: 4.7.1
 domain: pprof-operator.dev
 layout:
 - go.kubebuilder.io/v4
+plugins:
+  helm.kubebuilder.io/v1-alpha: {}
 projectName: pprof-operator
 repo: github.com/maulindesai/pprof-operator
 resources:
@@ -18,4 +20,8 @@ resources:
   kind: Profiler
   path: github.com/maulindesai/pprof-operator/api/v1
   version: v1
+  webhooks:
+    defaulting: true
+    validation: true
+    webhookVersion: v1
 version: "3"
