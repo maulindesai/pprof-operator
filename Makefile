@@ -1,5 +1,5 @@
 # Image URL to use all building/pushing image targets
-IMG ?= controller:latest
+IMG ?= pprof-controller:latest
 # Sidecar image URL
 SIDECAR_IMG ?= pprof-operator/pprof-sidecar:latest
 

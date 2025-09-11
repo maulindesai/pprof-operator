@@ -8,9 +8,9 @@
 
 A Kubernetes operator for automatically collecting pprof profiles from Go applications when CPU or memory thresholds are exceeded, helping you diagnose and resolve performance issues in production environments.
 
-<p align="center">
-  <img src="https://go.dev/images/gophers/ladder.svg" alt="Go Gopher" width="300"/>
-</p>
+<div align="center">
+  <img src="https://go.dev/images/gophers/headlamp-colorized.svg" alt="Go Gopher" width="300"/>
+</div>
 
 ## 📑 Table of Contents
 
