@@ -23,6 +23,7 @@ import (
 	"net/http"
 
 	observabilityv1 "github.com/maulindesai/pprof-operator/api/v1"
+	"github.com/maulindesai/pprof-operator/internal/metrics"
 	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -59,16 +60,15 @@ func (m *PodMutator) Handle(ctx context.Context, req admission.Request) admissio
 	}
 
 	value, exists := pod.Annotations[AnnotationProfilerEnable]
-	if !exists {
-		podlog.Info("Pod does not have profiler.pprof.dev/enable annotation", "pod", pod.Name)
-		return admission.Allowed("Pod does not have profiler.pprof.dev/enable annotation")
-	}
 
-	if value == "false" {
+	if value == "false" || exists == false {
 		if HasSidecar(pod.Spec.Containers, "pprof-sidecar") {
 			podlog.Info("Pod does not have profiler.pprof.dev/enable=true annotation", "pod", pod.Name)
 			podlog.Info("Removing pprof-sidecar", "pod", pod.Name)
 			return m.removeSidecarIfExists(ctx, pod, req)
+		} else {
+			podlog.Info("Pod does not have profiler.pprof.dev/enable=true annotation", "pod", pod.Name)
+			return admission.Allowed("Pod does not have profiler.pprof.dev/enable=true annotation")
 		}
 	}
 	// Get the profiler resource from the same namespace
@@ -96,6 +96,11 @@ func (m *PodMutator) Handle(ctx context.Context, req admission.Request) admissio
 
 	// Add the sidecar container to the pod
 	pod.Spec.Containers = append(pod.Spec.Containers, *sidecar)
+
+	// Increment metrics for sidecar attachment
+	metrics.SidecarsAttached.Inc()
+	metrics.ActiveSidecars.Inc()
+	podlog.Info("Incremented sidecar metrics", "attached", "true", "podName", pod.Name, "namespace", pod.Namespace)
 
 	// Create the patched pod
 	marshaledPod, err := json.Marshal(pod)
@@ -143,6 +148,12 @@ func (r *PodMutator) removeSidecarIfExists(ctx context.Context, pod *corev1.Pod,
 
 	// Apply the patch
 	logger.V(1).Info("Applying patch to remove profiler sidecar")
+
+	// Increment removed sidecars metric and decrement active sidecars
+	metrics.SidecarsRemoved.Inc()
+	metrics.ActiveSidecars.Dec()
+	logger.Info("Updated sidecar metrics", "removed", "true", "podName", pod.Name, "namespace", pod.Namespace)
+
 	marshaledPod, err := json.Marshal(patched)
 	if err != nil {
 		logger.Error(err, "Failed to marshal patched pod")

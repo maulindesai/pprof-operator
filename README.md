@@ -1,22 +1,83 @@
 # pprof-operator
 
-A Kubernetes operator for automatically collecting pprof profiles from applications when CPU or memory thresholds are exceeded.
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Go Report Card](https://goreportcard.com/badge/github.com/yourusername/pprof-operator)](https://goreportcard.com/report/github.com/yourusername/pprof-operator)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/yourusername/pprof-operator)](https://github.com/yourusername/pprof-operator)
+[![Kubernetes](https://img.shields.io/badge/kubernetes-%23326ce5.svg?style=flat&logo=kubernetes&logoColor=white)](https://kubernetes.io/)
+[![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=flat&logo=docker&logoColor=white)](https://www.docker.com/)
 
-## Description
+A Kubernetes operator for automatically collecting pprof profiles from Go applications when CPU or memory thresholds are exceeded, helping you diagnose and resolve performance issues in production environments.
 
-The pprof-operator is designed to help developers and operators diagnose performance issues in their applications running on Kubernetes. It works by:
+<p align="center">
+  <img src="https://go.dev/images/gophers/ladder.svg" alt="Go Gopher" width="300"/>
+</p>
 
-1. Monitoring containers for CPU and memory usage
-2. Automatically collecting pprof profiles when thresholds are exceeded
-3. Uploading the profiles to AWS S3 for later analysis
+## 📑 Table of Contents
+
+- [Overview](#-overview)
+- [Architecture](#-architecture)
+- [Metrics](#-metrics)
+- [Security Considerations](#-security-considerations)
+  - [Performance Impact Considerations](#performance-impact-considerations)
+- [Getting Started](#-getting-started)
+  - [Prerequisites](#prerequisites)
+  - [Installation](#installation)
+  - [Configuration](#configuration)
+    - [Profiler CRD Configuration Reference](#profiler-crd-configuration-reference)
+  - [Uninstallation](#uninstallation)
+- [Sample Application](#-sample-application)
+  - [Viewing and Analyzing Profiles](#viewing-and-analyzing-profiles)
+  - [Profile Analysis Guide](#profile-analysis-guide)
+  - [Common Performance Issues to Look For](#common-performance-issues-to-look-for)
+  - [Advanced Analysis Techniques](#advanced-analysis-techniques)
+- [Distribution](#-distribution)
+- [Troubleshooting](#-troubleshooting)
+- [Contributing](#-contributing)
+- [Additional Resources](#-additional-resources)
+  - [Related Projects](#related-projects)
+  - [Further Reading](#further-reading)
+- [License](#license)
+
+## 📋 Overview
+
+The pprof-operator is designed to help developers and operators diagnose performance issues in their Go applications running on Kubernetes. It works by:
+
+1. 🔍 Monitoring containers for CPU and memory usage using the Kubernetes metrics API
+2. 📊 Automatically collecting pprof profiles when thresholds are exceeded
+3. 🚀 Uploading the profiles to AWS S3 for later analysis
+4. 📈 Tracking profiling history in the Profiler resource status
+
+**Key Features:**
+- Threshold-based profiling (CPU and memory)
+- Automatic sidecar injection via webhooks
+- Support for multiple container runtimes (Docker, containerd, CRI-O)
+- Authentication support for pprof endpoints
+- Configurable monitoring periods and profile durations
+- Structured logging with different verbosity levels
+- Comprehensive metrics for monitoring operator performance
 
 The operator consists of two main components:
 - **Controller**: Manages the Profiler CRD and injects the sidecar container into target pods
 - **Sidecar**: Monitors the target container and collects profiles when thresholds are exceeded
 
-### Architecture
+## 🏗️ Architecture
 
 The pprof-operator uses a Kubernetes operator pattern with the following components:
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│                 │     │                 │     │                 │
+│  Profiler CRD   │◄────┤   Controller    │────►│    Webhook      │
+│                 │     │                 │     │                 │
+└─────────────────┘     └─────────────────┘     └────────┬────────┘
+                                                         │
+                                                         ▼
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│                 │     │                 │     │                 │
+│  Target Pod     │     │  Sidecar        │────►│   AWS S3        │
+│                 │     │  Container      │     │                 │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+```
 
 1. **Profiler Custom Resource**: Defines which applications to monitor and the thresholds for profiling
 2. **Controller**: Watches for Profiler resources and manages the lifecycle of profiling sidecars
@@ -25,109 +86,141 @@ The pprof-operator uses a Kubernetes operator pattern with the following compone
 
 When a pod is created that matches the selector in a Profiler resource, the webhook injects a sidecar container. This sidecar monitors the target container's resource usage and, when thresholds are exceeded, collects pprof profiles and uploads them to S3.
 
-### Security Considerations
+## 📊 Metrics
+
+The pprof-operator provides comprehensive metrics to monitor its performance and usage. These metrics are exposed via Prometheus endpoints in both the operator and the sidecar containers.
+
+### Operator Metrics
+
+The operator exposes the following metrics on port 8443 (HTTPS) or 8080 (HTTP):
+
+| Metric Name | Type | Description |
+|-------------|------|-------------|
+| `pprof_operator_sidecars_attached_total` | Counter | Total number of pprof sidecars attached to pods |
+| `pprof_operator_sidecars_removed_total` | Counter | Total number of pprof sidecars removed from pods |
+| `pprof_operator_active_sidecars` | Gauge | Current number of active pprof sidecars |
+
+### Sidecar Metrics
+
+Each sidecar container exposes the following metrics on port 8080:
+
+| Metric Name | Type | Labels | Description |
+|-------------|------|--------|-------------|
+| `pprof_sidecar_profiles_generated_total` | Counter | `profile_type` | Total number of pprof profiles generated by type (cpu, heap) |
+| `pprof_sidecar_profiles_uploaded_total` | Counter | - | Total number of pprof profiles uploaded to S3 |
+| `pprof_sidecar_profile_upload_errors_total` | Counter | - | Total number of errors when uploading profiles to S3 |
+| `pprof_sidecar_threshold_exceeded_total` | Counter | `resource_type` | Total number of times resource thresholds were exceeded (cpu, memory) |
+| `pprof_sidecar_resource_usage_percent` | Gauge | `resource_type` | Current resource usage as a percentage (cpu, memory) |
+
+### Accessing Metrics
+
+To access the operator metrics:
+
+```sh
+# Port-forward the metrics service
+kubectl port-forward -n pprof-operator-system svc/controller-manager-metrics-service 8443:8443
+
+# Access metrics (if using HTTPS)
+curl -k https://localhost:8443/metrics
+```
+
+To access sidecar metrics:
+
+```sh
+# Port-forward to a specific pod's sidecar
+kubectl port-forward -n <namespace> <pod-name> 8080:8080
+
+# Access metrics
+curl http://localhost:8080/metrics
+```
+
+### Integrating with Prometheus
+
+The operator includes a ServiceMonitor resource that can be used with Prometheus Operator to automatically scrape metrics. To enable this, make sure you have Prometheus Operator installed and the ServiceMonitor CRD available in your cluster.
+
+## 🔒 Security Considerations
 
 The pprof-operator requires certain permissions to function properly:
 
 1. **RBAC Permissions**: The operator needs permissions to watch and modify pods, deployments, and Profiler resources
 2. **AWS Credentials**: For uploading profiles to S3, the operator needs AWS credentials
-3. **Host Access**: The sidecar container needs access to the cgroup filesystem to monitor resource usage
+3. **Host Access**: The sidecar container needs access to the Kubernetes metrics API to monitor resource usage
 
 To minimize security risks:
-- Use a dedicated IAM role with minimal permissions for S3 access
-- Store AWS credentials in a Kubernetes secret
+- Use a dedicated IAM role with minimal permissions for S3 access (only PutObject permissions for the specific bucket)
+- Store AWS credentials in a Kubernetes secret and ensure it's properly secured
 - Consider network policies to restrict the operator's communication
 - Review the RBAC permissions in the deployment manifests
+- Use TLS for webhook communication (enabled by default)
+- Consider using pod security contexts to further restrict the sidecar container
 
-## Getting Started
+### Performance Impact Considerations
+
+The pprof-operator is designed to have minimal impact on your applications:
+
+1. **Resource Usage**: The sidecar container has low resource requirements (10m CPU, 64Mi memory by default)
+2. **Monitoring Overhead**: The sidecar polls the Kubernetes metrics API at configurable intervals (default: 15s)
+3. **Profiling Impact**: 
+   - CPU profiling adds a small overhead (typically <5%) during the profiling period
+   - Memory profiling has negligible impact but may pause the application briefly when collecting heap profiles
+   - Profile collection is rate-limited to avoid excessive profiling
+4. **Network Traffic**: Profiles are uploaded to S3 only when thresholds are exceeded, not continuously
+
+To minimize performance impact:
+- Set appropriate CPU and memory thresholds to avoid excessive profiling
+- Configure longer monitoring periods for non-critical applications
+- Consider using different thresholds for different environments (dev, staging, prod)
+- Monitor the resource usage of the sidecar container itself
+
+## 🚀 Getting Started
 
 ### Prerequisites
-- go version v1.24.0+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+- Go version v1.24.0+
+- Docker version 17.03+
+- kubectl version v1.11.3+
+- Access to a Kubernetes v1.11.3+ cluster
+- AWS account with S3 access (for storing profiles)
 
-### To Deploy on the cluster
-**Build and push both the operator and sidecar images:**
+### Installation
 
+#### 1. Clone the repository
 ```sh
-make docker-build-all docker-push-all IMG=<some-registry>/pprof-operator:tag SIDECAR_IMG=<some-registry>/pprof-sidecar:tag
+git clone https://github.com/yourusername/pprof-operator.git
+cd pprof-operator
 ```
 
-**NOTE:** These images ought to be published in the personal registry you specified.
-And it is required to have access to pull the images from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+#### 2. Build and push the images
+Build and push both the operator and sidecar images:
 
-**Install the CRDs into the cluster:**
+```sh
+make docker-build-all docker-push-all IMG=<your-registry>/pprof-operator:tag SIDECAR_IMG=<your-registry>/pprof-sidecar:tag
+```
 
+> **NOTE:** Make sure you have permission to push to the specified registry and that the images are accessible from your Kubernetes cluster.
+
+#### 3. Install the CRDs
 ```sh
 make install
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
-
+#### 4. Deploy the operator
 ```sh
-make deploy IMG=<some-registry>/pprof-operator:tag
+make deploy IMG=<your-registry>/pprof-operator:tag
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin privileges or be logged in as admin.
 
-**Create a Profiler resource**
+### Configuration
 
-Create a Profiler resource to configure which pods to monitor and the thresholds for profiling:
-
-```yaml
-apiVersion: observability.pprof-operator.dev/v1
-kind: Profiler
-metadata:
-  name: example-profiler
-spec:
-  # Select pods to monitor by labels
-  selector:
-    matchLabels:
-      app: my-application
-  # Target container to monitor
-  targetContainer: app
-  # CPU threshold in percentage (0-100) that triggers profiling
-  cpuThreshold: 70
-  # Memory threshold in percentage (0-100) that triggers profiling
-  memoryThreshold: 80
-  # Duration in seconds to collect the profile
-  profileDuration: 30
-  # S3 bucket to upload profiles to
-  s3Bucket: my-profiles-bucket
-  # S3 region
-  s3Region: us-west-2
-  # S3 path prefix for storing profiles
-  s3PathPrefix: profiles/
-  # AWS credentials secret name
-  awsCredentialsSecret: aws-credentials
-```
-
-Apply the Profiler resource:
-
-```sh
-kubectl apply -f config/sample/observability_v1_profiler.yaml
-```
-
-You can also apply the sample from the config/samples:
-
-```sh
-kubectl apply -k config/samples/
-```
-
-> **NOTE**: Make sure to update the sample with your S3 bucket and AWS credentials.
-
-**Create AWS credentials secret**
-
-The sidecar needs AWS credentials to upload profiles to S3. Create a secret with your AWS credentials:
+#### 1. Create AWS credentials secret
+The sidecar needs AWS credentials to upload profiles to S3:
 
 ```yaml
 apiVersion: v1
 kind: Secret
 metadata:
   name: aws-credentials
+  namespace: default  # Change to your namespace
 type: Opaque
 stringData:
   AWS_ACCESS_KEY_ID: "your-access-key"
@@ -140,138 +233,400 @@ Apply the secret:
 kubectl apply -f aws-credentials.yaml
 ```
 
-Make sure the `awsCredentialsSecret` field in your Profiler resource matches the name of this secret.
+#### 2. Create a Profiler resource
+Create a Profiler resource to configure which pods to monitor and the thresholds for profiling:
 
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
+```yaml
+apiVersion: observability.pprof-operator.dev/v1
+kind: Profiler
+metadata:
+  name: example-profiler
+  namespace: default  # Change to your namespace
+spec:
+  # Select pods to monitor by labels
+  selector:
+    matchLabels:
+      app: my-application
 
+  # Target container to monitor
+  targetContainer: app
+
+  # CPU threshold in percentage (0-100) that triggers profiling
+  cpuThreshold: 70
+
+  # Memory threshold in percentage (0-100) that triggers profiling
+  memoryThreshold: 80
+
+  # Monitoring period in seconds (default: 15)
+  monitoringPeriod: 15
+
+  # Duration in seconds to collect the profile
+  profileDuration: 30
+
+  # S3 bucket to upload profiles to
+  s3Bucket: my-profiles-bucket
+
+  # S3 region (default: us-east-1)
+  s3Region: us-west-2
+
+  # S3 path prefix for storing profiles
+  s3PathPrefix: profiles/
+
+  # AWS credentials secret name
+  awsCredentialsSecret: aws-credentials
+
+  # Optional: Scrape URL configuration
+  scrapURL:
+    scrapeURL: "http://localhost:8080/debug/pprof"
+    auth:
+      type: Basic
+      basicAuth:
+        username: "admin"
+        password: "password"
+```
+
+Apply the Profiler resource:
+
+```sh
+kubectl apply -f your-profiler.yaml
+```
+
+You can also use the sample configuration:
+
+```sh
+kubectl apply -k config/samples/
+```
+
+> **NOTE**: Make sure to update the sample with your S3 bucket and AWS credentials.
+
+#### Profiler CRD Configuration Reference
+
+The Profiler CRD supports the following configuration options:
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `selector` | `LabelSelector` | Yes | - | Label selector to identify pods to monitor |
+| `targetContainer` | `string` | Yes | - | Name of the container to monitor in the selected pods |
+| `cpuThreshold` | `int32` | No | 80 | CPU usage percentage (0-100) that triggers profiling |
+| `memoryThreshold` | `int32` | No | 80 | Memory usage percentage (0-100) that triggers profiling |
+| `monitoringPeriod` | `int32` | No | 15 | Interval in seconds to check resource usage |
+| `profileDuration` | `int32` | No | 30 | Duration in seconds to collect profiles |
+| `s3Bucket` | `string` | Yes | - | S3 bucket name for storing profiles |
+| `s3Region` | `string` | No | us-east-1 | AWS region for the S3 bucket |
+| `s3PathPrefix` | `string` | No | - | Path prefix for storing profiles in the S3 bucket |
+| `awsCredentialsSecret` | `string` | Yes | - | Name of the secret containing AWS credentials |
+| `scrapURL` | `ScrapTarget` | No | - | Configuration for scraping pprof endpoints |
+
+##### ScrapTarget Configuration
+
+The `scrapURL` field allows you to configure how the sidecar scrapes pprof endpoints:
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `scrapeURL` | `string` | Yes | - | Base URL for the pprof endpoint (e.g., "http://localhost:8080/debug/pprof") |
+| `auth` | `Auth` | No | - | Authentication configuration for the pprof endpoint |
+
+##### Auth Configuration
+
+The `auth` field supports the following authentication methods:
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `type` | `string` | Yes | Basic | Authentication type (currently only "Basic" is supported) |
+| `basicAuth` | `BasicAuth` | No | - | Basic authentication configuration |
+
+##### BasicAuth Configuration
+
+For basic authentication, you can provide credentials directly or reference a secret:
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `username` | `string` | No | - | Username for basic authentication |
+| `password` | `string` | No | - | Password for basic authentication |
+| `secretRef` | `SecretRef` | No | - | Reference to a secret containing credentials |
+
+##### SecretRef Configuration
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | `string` | Yes | - | Name of the secret |
+| `namespace` | `string` | No | Same as Profiler | Namespace of the secret |
+| `usernameKey` | `string` | No | username | Key in the secret for the username |
+| `passwordKey` | `string` | No | password | Key in the secret for the password |
+
+### Uninstallation
+
+#### 1. Delete the Profiler resources
 ```sh
 kubectl delete -k config/samples/
 ```
 
-**Delete the APIs(CRDs) from the cluster:**
-
+#### 2. Delete the CRDs
 ```sh
 make uninstall
 ```
 
-**UnDeploy the controller from the cluster:**
-
+#### 3. Undeploy the controller
 ```sh
 make undeploy
 ```
 
-## Project Distribution
+## 📦 Sample Application
 
-Following the options to release and provide this solution to the users.
+The repository includes a sample Go application that demonstrates how to use the pprof-operator:
 
-### By providing a bundle with all YAML files
+### What's Included
+
+- **Sample Go Application**: A simple HTTP server with pprof endpoints and functions to simulate CPU and memory load
+- **Kubernetes Deployment**: Manifest for deploying the sample application to Kubernetes
+- **Profiler Configuration**: Custom Resource for configuring the pprof-operator to monitor the sample application
+
+### Quick Start with Sample App
+
+1. Build and push the sample application image:
+   ```sh
+   docker build -t <your-registry>/pprof-sample-app:latest config/samples/examples/sample-app/
+   docker push <your-registry>/pprof-sample-app:latest
+   ```
+
+2. Deploy the application:
+   ```sh
+   # Update the image in the deployment.yaml file
+   sed 's|${SAMPLE_APP_IMAGE}|<your-registry>/pprof-sample-app:latest|g' config/samples/examples/sample-app/deployment.yaml | kubectl apply -f -
+   ```
+
+3. Generate load to trigger profiling:
+   ```sh
+   # Port-forward the service
+   kubectl port-forward svc/pprof-sample-app 8080:8080
+
+   # In another terminal, generate CPU load
+   curl http://localhost:8080/load/cpu
+
+   # Generate memory load
+   curl http://localhost:8080/load/memory
+   ```
+
+4. Check the Profiler status:
+   ```sh
+   kubectl get profiler -o yaml
+   ```
+
+### Viewing and Analyzing Profiles
+
+Profiles are uploaded to the configured S3 bucket and can be analyzed using the `go tool pprof` command:
+
+```sh
+# Download a profile from S3
+aws s3 cp s3://your-bucket/profiles/sample-app/cpu-<timestamp>.pprof ./cpu.pprof
+
+# Analyze the profile with web UI
+go tool pprof -http=:8081 ./cpu.pprof
+
+# Or use the interactive terminal UI
+go tool pprof ./cpu.pprof
+```
+
+#### Profile Analysis Guide
+
+The pprof tool provides several ways to analyze your profiles:
+
+1. **Web UI** (recommended for visual exploration):
+   ```sh
+   go tool pprof -http=:8081 ./cpu.pprof
+   ```
+   This opens a web interface with multiple views:
+   - **Graph**: Visual call graph showing where time is spent
+   - **Flame Graph**: Hierarchical view of call stacks
+   - **Top**: Functions sorted by resource consumption
+   - **Source**: Annotated source code showing hot spots
+
+2. **Terminal UI** (useful for quick analysis or remote servers):
+   ```sh
+   go tool pprof ./cpu.pprof
+   ```
+   Common commands in the interactive terminal:
+   - `top`: Show top functions by CPU time
+   - `list <function>`: Show source code for a function
+   - `web`: Generate and open a SVG call graph (requires Graphviz)
+   - `help`: Show all available commands
+
+3. **Comparing Profiles** (to identify changes over time):
+   ```sh
+   go tool pprof -http=:8081 -diff_base=./cpu-old.pprof ./cpu-new.pprof
+   ```
+   This highlights differences between two profiles, helping identify regressions.
+
+#### Common Performance Issues to Look For
+
+When analyzing profiles, look for these common patterns:
+
+1. **CPU Profiles**:
+   - Functions consuming excessive CPU time
+   - Unexpected hot spots in seemingly simple code
+   - Excessive garbage collection activity
+   - Inefficient algorithms with high complexity
+
+2. **Memory Profiles**:
+   - Memory leaks (objects that aren't being garbage collected)
+   - Excessive allocations in hot code paths
+   - Large temporary objects that could be avoided
+   - String concatenation in loops (consider using strings.Builder)
+
+3. **Block Profiles** (if enabled):
+   - Excessive lock contention
+   - Long-held locks blocking other goroutines
+   - Inefficient synchronization patterns
+
+#### Advanced Analysis Techniques
+
+For more advanced analysis:
+
+1. **Differential Profiling**:
+   Compare profiles before and after code changes to identify regressions.
+
+2. **Continuous Profiling**:
+   Set up regular profiling to track performance over time and identify gradual degradations.
+
+3. **Custom Visualization**:
+   Export profiles to other formats for custom analysis:
+   ```sh
+   go tool pprof -proto ./cpu.pprof > profile.pb.gz
+   ```
+
+4. **Integration with Monitoring**:
+   Correlate profile data with metrics from your monitoring system to understand the context of performance issues.
+
+For more information on pprof, see the [official documentation](https://github.com/google/pprof/blob/master/doc/README.md).
+
+## 📦 Distribution
+
+There are multiple ways to distribute and install the pprof-operator:
+
+### YAML Bundle
 
 1. Build the installer for the image built and published in the registry:
 
 ```sh
-make build-installer IMG=<some-registry>/pprof-operator:tag
+make build-installer IMG=<your-registry>/pprof-operator:tag
 ```
 
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
+> **NOTE:** This generates an 'install.yaml' file in the dist directory containing all resources needed to install the project.
 
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
+2. Users can install the operator with:
 
 ```sh
 kubectl apply -f https://raw.githubusercontent.com/<org>/pprof-operator/<tag or branch>/dist/install.yaml
 ```
 
-### By providing a Helm Chart
+### Helm Chart
 
-1. Build the chart using the optional helm plugin
+1. Build the chart using the optional helm plugin:
 
 ```sh
 kubebuilder edit --plugins=helm/v1-alpha
 ```
 
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
+2. A chart will be generated under 'dist/chart' that users can install.
 
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
+> **NOTE:** When updating the project, remember to update the Helm Chart using the same command to sync changes. For webhooks, use the '--force' flag and manually reapply any custom configuration.
 
-## Troubleshooting
+## 🔧 Troubleshooting
 
 ### Common Issues
 
-1. **Sidecar Not Injected**
-   - Check if the pod has the correct labels matching the Profiler selector
-   - Verify the webhook is running: `kubectl get pods -n <operator-namespace>`
-   - Check webhook logs: `kubectl logs -n <operator-namespace> <webhook-pod-name>`
-   - Ensure the pod is created after the Profiler resource
+#### 1. Sidecar Not Injected
+- Check if the pod has the correct labels matching the Profiler selector
+- Verify the webhook is running: `kubectl get pods -n <operator-namespace>`
+- Check webhook logs: `kubectl logs -n <operator-namespace> <webhook-pod-name>`
+- Ensure the pod is created after the Profiler resource
 
-2. **Profiles Not Being Collected**
-   - Check sidecar logs: `kubectl logs -n <app-namespace> <pod-name> -c pprof-sidecar`
-   - Verify CPU/Memory thresholds are set appropriately
-   - Ensure the target container exposes pprof endpoints
+#### 2. Profiles Not Being Collected
+- Check sidecar logs: `kubectl logs -n <app-namespace> <pod-name> -c pprof-sidecar`
+- Verify CPU/Memory thresholds are set appropriately
+- Ensure the target container exposes pprof endpoints
 
-3. **Profiles Not Uploading to S3**
-   - Verify AWS credentials are correct
-   - Check S3 bucket permissions
-   - Ensure the sidecar has network access to AWS S3
-   - Check for any errors in the sidecar logs
+#### 3. Profiles Not Uploading to S3
+- Verify AWS credentials are correct
+- Check S3 bucket permissions
+- Ensure the sidecar has network access to AWS S3
+- Check for any errors in the sidecar logs
 
-4. **Webhook Certificate Issues**
-   - Verify certificates are properly mounted
-   - Check certificate expiration
-   - Regenerate certificates if needed: `kubectl delete secret webhook-server-cert -n <operator-namespace>`
+#### 4. Webhook Certificate Issues
+- Verify certificates are properly mounted
+- Check certificate expiration
+- Regenerate certificates if needed: `kubectl delete secret webhook-server-cert -n <operator-namespace>`
 
-### Debugging
+### Debugging Tips
 
-1. **Enable Verbose Logging**
-   - Set the log level to debug in the operator deployment
-   - Add the following to the operator container args: `--zap-log-level=debug`
+#### Enable Verbose Logging
+Set the log level to debug in the operator deployment:
+```sh
+kubectl patch deployment pprof-operator-controller-manager -n pprof-operator-system --type='json' -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/args", "value": ["--health-probe-bind-address=:8081", "--metrics-bind-address=127.0.0.1:8080", "--leader-elect", "--zap-log-level=debug"]}]'
+```
 
-2. **Check Events**
-   - View Kubernetes events: `kubectl get events -n <namespace>`
-   - Look for events related to the operator, webhook, or target pods
+#### Check Kubernetes Events
+View events related to the operator and target pods:
+```sh
+kubectl get events -n <namespace>
+```
 
-3. **Verify RBAC Permissions**
-   - Ensure the operator service account has the necessary permissions
-   - Check for any "forbidden" errors in the logs
+#### Verify RBAC Permissions
+Ensure the operator service account has the necessary permissions:
+```sh
+kubectl auth can-i <verb> <resource> --as=system:serviceaccount:<namespace>:<serviceaccount>
+```
 
-## Contributing
+## 👥 Contributing
 
-Contributions to the pprof-operator are welcome! Here's how you can contribute:
+We welcome contributions to the pprof-operator! Here's how you can help:
 
-1. **Report Issues**: If you find a bug or have a feature request, please open an issue on GitHub.
+### Ways to Contribute
 
-2. **Submit Pull Requests**: 
-   - Fork the repository
-   - Create a new branch for your feature or bugfix
-   - Make your changes
-   - Submit a pull request
+#### 🐛 Report Issues
+If you find a bug or have a feature request, please [open an issue](https://github.com/yourusername/pprof-operator/issues/new) with:
+- A clear description of the problem
+- Steps to reproduce
+- Expected vs. actual behavior
+- Your environment details
 
-3. **Development Guidelines**:
-   - Follow Go coding standards
-   - Add unit tests for new functionality
-   - Update documentation for any changes
-   - Run `make test` to ensure all tests pass
-   - Run `make lint` to check for code quality issues
+#### 🔀 Submit Pull Requests
+1. Fork the repository
+2. Create a new branch: `git checkout -b feature/your-feature-name`
+3. Make your changes
+4. Run tests: `make test`
+5. Submit a pull request
 
-4. **Code Review Process**:
-   - All pull requests require at least one review
-   - Address any comments or feedback from reviewers
-   - Once approved, a maintainer will merge your changes
+#### 📚 Development Guidelines
+- Follow [Go coding standards](https://github.com/golang/go/wiki/CodeReviewComments)
+- Add unit tests for new functionality
+- Update documentation for any changes
+- Run `make test` to ensure all tests pass
+- Run `make lint` to check for code quality issues
 
-**NOTE:** Run `make help` for more information on all potential `make` targets
+#### 🔍 Code Review Process
+- All pull requests require at least one review
+- Address any comments or feedback from reviewers
+- Once approved, a maintainer will merge your changes
 
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+> **TIP:** Run `make help` for more information on all available `make` targets
+
+For more information on Kubernetes operators, see the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+
+## 📚 Additional Resources
+
+### Related Projects
+
+- [Kubernetes](https://kubernetes.io/) - The container orchestration platform
+- [Kubebuilder](https://book.kubebuilder.io/) - Framework for building Kubernetes APIs
+- [pprof](https://github.com/google/pprof) - The Go profiling tool
+- [Prometheus](https://prometheus.io/) - Monitoring system that pairs well with pprof-operator
+
+### Further Reading
+
+- [Profiling Go Programs](https://blog.golang.org/pprof) - Official Go blog post on profiling
+- [Continuous Profiling in Go](https://medium.com/@tvii/continuous-profiling-in-go-b2ac0e9e8b44) - Article on continuous profiling
+- [Kubernetes Operators Pattern](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/) - Learn more about the operator pattern
 
 ## License
 

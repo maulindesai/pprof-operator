@@ -37,7 +37,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/go-logr/logr"
 	"github.com/go-logr/zapr"
+	"github.com/maulindesai/pprof-operator/sidecar/pkg/metrics"
 	"github.com/maulindesai/pprof-operator/sidecar/pkg/types"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -411,23 +413,6 @@ func getKubeletMetrics(config *Config) (float64, float64, error) {
 	return cpuPercent, memPercent, nil
 }
 
-// getMetrics reads CPU and memory metrics in percentage
-func getMetrics(config *Config) (float64, float64, error) {
-	logger.V(2).Info("Getting metrics for container",
-		"container", config.TargetContainer,
-		"namespace", config.Namespace,
-		"pod", config.PodName)
-
-	// Get metrics using the metrics.k8s.io client
-	cpuPercent, memPercent, err := getKubeletMetrics(config)
-	if err != nil {
-		logger.Error(err, "Failed to get metrics using kubelet API")
-		return 0, 0, err
-	}
-
-	return cpuPercent, memPercent, nil
-}
-
 func monitorResourceUsage(ctx context.Context, config *Config) {
 	logger.Info("Starting resource usage monitoring",
 		"period", config.MonitoringPeriod,
@@ -453,26 +438,15 @@ func monitorResourceUsage(ctx context.Context, config *Config) {
 			return
 		case <-ticker.C:
 			// Get container metrics using kubelet API
-			cpuPercent, memoryPercent, err := getMetrics(config)
+			cpuPercent, memoryPercent, err := getKubeletMetrics(config)
 			if err != nil {
 				logger.Error(err, "Error getting container metrics")
 				continue
 			}
 
-			// Log at different levels based on importance
-			if cpuPercent >= float64(cpuThreshold)*0.8 || memoryPercent >= float64(memThreshold)*0.8 {
-				// If approaching thresholds, log at info level
-				logger.Info("Resource usage approaching thresholds",
-					"cpu", fmt.Sprintf("%.2f%%", cpuPercent),
-					"cpuThreshold", cpuThreshold,
-					"memory", fmt.Sprintf("%.2f%%", memoryPercent),
-					"memThreshold", memThreshold)
-			} else {
-				// Otherwise log at debug level
-				logger.V(1).Info("Resource usage",
-					"cpu", fmt.Sprintf("%.2f%%", cpuPercent),
-					"memory", fmt.Sprintf("%.2f%%", memoryPercent))
-			}
+			// Update resource usage metrics
+			metrics.ResourceUsage.With(prometheus.Labels{"resource_type": "cpu"}).Set(cpuPercent)
+			metrics.ResourceUsage.With(prometheus.Labels{"resource_type": "memory"}).Set(memoryPercent)
 
 			// Check if thresholds are exceeded, using QoS-adjusted thresholds
 			cpuThresholdExceeded := cpuPercent >= float64(cpuThreshold)
@@ -482,6 +456,14 @@ func monitorResourceUsage(ctx context.Context, config *Config) {
 			logger.V(2).Info("Threshold status",
 				"cpuExceeded", cpuThresholdExceeded,
 				"memExceeded", memThresholdExceeded)
+
+			// Update threshold exceeded metrics if thresholds are exceeded
+			if cpuThresholdExceeded {
+				metrics.ThresholdExceeded.With(prometheus.Labels{"resource_type": "cpu"}).Inc()
+			}
+			if memThresholdExceeded {
+				metrics.ThresholdExceeded.With(prometheus.Labels{"resource_type": "memory"}).Inc()
+			}
 
 			// Avoid collecting profiles too frequently
 			now := time.Now()
@@ -499,6 +481,7 @@ func monitorResourceUsage(ctx context.Context, config *Config) {
 					lastCPUTime = now
 				} else {
 					logger.V(2).Info("CPU threshold not exceeded or cooldown period active",
+						"cpuThresholdExceeded", cpuThresholdExceeded,
 						"cpuUsage", fmt.Sprintf("%.2f%%", cpuPercent),
 						"threshold", cpuThreshold,
 						"timeSinceLastProfile", now.Sub(lastCPUTime))
@@ -644,6 +627,8 @@ func collectAndUploadProfile(ctx context.Context, config *Config, profileType st
 		}
 		logger.V(1).Info("Profile data written to file", "bytes", bytesWritten, "path", profilePath)
 
+		// Increment profile generated metric
+		metrics.ProfilesGenerated.With(prometheus.Labels{"profile_type": profileType}).Inc()
 		logger.Info("Successfully collected profile", "type", profileType, "url", url)
 	} else {
 		logger.V(0).Info("No scraping done - no scrap URL found")
@@ -728,6 +713,8 @@ func uploadToS3(ctx context.Context, config *Config, filePath, s3Key string) err
 		Body:   file,
 	})
 	if err != nil {
+		// Increment upload error metric
+		metrics.ProfileUploadErrors.Inc()
 		logger.Error(err, "Failed to upload file to S3",
 			"bucket", config.S3Bucket,
 			"key", s3Key,
@@ -735,6 +722,8 @@ func uploadToS3(ctx context.Context, config *Config, filePath, s3Key string) err
 		return fmt.Errorf("failed to upload file to S3: %w", err)
 	}
 
+	// Increment upload success metric
+	metrics.ProfilesUploaded.Inc()
 	logger.Info("Successfully uploaded file to S3",
 		"bucket", config.S3Bucket,
 		"key", s3Key,
@@ -842,6 +831,19 @@ func main() {
 		sig := <-sigCh
 		logger.Info("Received termination signal, shutting down", "signal", sig)
 		cancel()
+	}()
+
+	// Start metrics server on port 8080
+	metricsAddr := os.Getenv("METRICS_ADDR")
+	if metricsAddr == "" {
+		metricsAddr = ":8080"
+	}
+
+	logger.Info("Starting metrics server", "address", metricsAddr)
+	go func() {
+		if err := metrics.StartMetricsServer(metricsAddr); err != nil {
+			logger.Error(err, "Failed to start metrics server")
+		}
 	}()
 
 	// Start monitoring

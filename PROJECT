@@ -6,6 +6,8 @@ cliVersion: 4.7.1
 domain: pprof-operator.dev
 layout:
 - go.kubebuilder.io/v4
+plugins:
+  helm.kubebuilder.io/v1-alpha: {}
 projectName: pprof-operator
 repo: github.com/maulindesai/pprof-operator
 resources:
