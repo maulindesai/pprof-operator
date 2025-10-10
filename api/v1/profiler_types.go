@@ -59,6 +59,14 @@ type ProfilerSpec struct {
 	// +optional
 	AWSCredentialsSecret string `json:"awsCredentialsSecret,omitempty"`
 
+	// AWS credentials
+	// +optional
+	AwsAccessKeyId string `json:"AWS_ACCESS_KEY_ID,omitempty"`
+
+	// AWS credentials
+	// +optional
+	AwsSecretAccessKey string `json:"AWS_SECRET_ACCESS_KEY,omitempty"`
+
 	// ScrapTarget is the URL to scrape profiles from
 	// +optional
 	ScrapTarget *ScrapTarget `json:"scrapURL,omitempty"`

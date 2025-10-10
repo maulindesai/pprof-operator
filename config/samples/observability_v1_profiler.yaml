@@ -19,10 +19,16 @@ spec:
   s3Bucket: "profiler-bucket"
 
   # S3 region (default: us-east-1)
-  s3Region: "us-west-2"
+  s3Region: "sgp1"
 
   # S3 path prefix for storing profiles
   s3PathPrefix: "profiles/sample-app"
 
   # AWS credentials secret name
   awsCredentialsSecret: "aws-credentials"
+
+  # AWS credentials secret keys
+  AWS_ACCESS_KEY_ID: "your-access-key"
+
+  # AWS credentials secret keys
+  AWS_SECRET_ACCESS_KEY: "your-secret-key"

@@ -21,6 +21,9 @@ const (
 	// AnnotationProfilerEnable is the annotation key used to enable/disable the profiler sidecar
 	AnnotationProfilerEnable = "profiler.pprof.dev/enable"
 
+	// AnnotationProfilerName is the annotation key used to specify the name of the profiler
+	AnnotationProfilerName = "profiler.pprof.dev/name"
+
 	// AnnotationTargetContainer is the annotation key used to specify the target container for profiling
 	AnnotationTargetContainer = "profiler.pprof.dev/target_container"
 

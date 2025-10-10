@@ -39,6 +39,12 @@ spec:
           spec:
             description: spec defines the desired state of Profiler
             properties:
+              AWS_ACCESS_KEY_ID:
+                description: AWS credentials
+                type: string
+              AWS_SECRET_ACCESS_KEY:
+                description: AWS credentials
+                type: string
               awsCredentialsSecret:
                 description: AWS credentials secret name
                 type: string

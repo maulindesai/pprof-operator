@@ -71,6 +71,12 @@ func (m *PodMutator) Handle(ctx context.Context, req admission.Request) admissio
 			return admission.Allowed("Pod does not have profiler.pprof.dev/enable=true annotation")
 		}
 	}
+
+	value, exists = pod.Annotations[AnnotationProfilerName]
+	if !exists {
+		return admission.Allowed("No profiler name specified")
+	}
+
 	// Get the profiler resource from the same namespace
 	profilerList := &observabilityv1.ProfilerList{}
 	if err := m.Client.List(ctx, profilerList, client.InNamespace(req.Namespace)); err != nil {
@@ -84,8 +90,20 @@ func (m *PodMutator) Handle(ctx context.Context, req admission.Request) admissio
 		return admission.Allowed("No profiler found in namespace")
 	}
 
-	// Use the first profiler found
-	profiler := &profilerList.Items[0]
+	// fetch the profiler from the pod annotation
+	var profiler *observabilityv1.Profiler
+	for _, p := range profilerList.Items {
+		if p.Name == pod.Annotations[AnnotationProfilerName] {
+			profiler = &p
+			break
+		}
+	}
+
+	if profiler == nil {
+		err = fmt.Errorf("failed to find profiler %s", pod.Annotations[AnnotationProfilerName])
+		podlog.Error(err, "Failed to find profiler")
+		return admission.Errored(http.StatusInternalServerError, err)
+	}
 
 	// Build the sidecar container
 	sidecar, err := BuildProfilerSidecar(profiler, pod)
