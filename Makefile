@@ -1,7 +1,7 @@
 # Image URL to use all building/pushing image targets
-IMG ?= pprof-controller:latest
+IMG ?= ghcr.io/maulindesai/pprof-controller:latest
 # Sidecar image URL
-SIDECAR_IMG ?= pprof-operator/pprof-sidecar:latest
+SIDECAR_IMG ?= ghcr.io/maulindesai/pprof-operator/pprof-sidecar:latest
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))

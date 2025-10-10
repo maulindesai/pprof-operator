@@ -48,7 +48,7 @@ func BuildProfilerSidecar(profiler *observabilityv1.Profiler, pod *corev1.Pod) (
 
 	// Create the base container with standard configuration
 	// Use environment variable for sidecar image if set, otherwise use default
-	sidecarImage := "pprof-operator/pprof-sidecar:latest"
+	sidecarImage := "ghcr.io/maulindesai/pprof-operator/pprof-sidecar:latest"
 	if envImage := os.Getenv("PPROF_SIDECAR_IMAGE"); envImage != "" {
 		sidecarImage = envImage
 	}
