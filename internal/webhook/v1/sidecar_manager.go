@@ -18,9 +18,10 @@ package v1
 
 import (
 	"fmt"
+	"os"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	"os"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	observabilityv1 "github.com/maulindesai/pprof-operator/api/v1"
@@ -53,6 +54,7 @@ func BuildProfilerSidecar(profiler *observabilityv1.Profiler, pod *corev1.Pod) (
 		sidecarImage = envImage
 	}
 
+	//TODO need to add metrics port
 	sidecarContainer := corev1.Container{
 		Name:            "pprof-sidecar",
 		Image:           sidecarImage,
@@ -110,6 +112,22 @@ func BuildProfilerSidecar(profiler *observabilityv1.Profiler, pod *corev1.Pod) (
 	// Add scrape target configuration from CRD
 	scrapConfigEnvVars := getScrapeTargetConfiguration(profiler, pod, logger)
 	sidecarContainer.Env = append(sidecarContainer.Env, scrapConfigEnvVars...)
+
+	// Optional: Custom S3-compatible endpoint via pod annotations (e.g., DigitalOcean Spaces)
+	if ep, ok := pod.Annotations[AnnotationS3Endpoint]; ok && ep != "" {
+		logger.Info("Using custom S3-compatible endpoint from annotation", "endpoint", ep)
+		sidecarContainer.Env = append(sidecarContainer.Env, corev1.EnvVar{
+			Name:  "S3_ENDPOINT",
+			Value: ep,
+		})
+	}
+	if fps, ok := pod.Annotations[AnnotationS3ForcePathStyle]; ok && fps != "" {
+		logger.Info("Using S3 force path style from annotation", "value", fps)
+		sidecarContainer.Env = append(sidecarContainer.Env, corev1.EnvVar{
+			Name:  "S3_FORCE_PATH_STYLE",
+			Value: fps,
+		})
+	}
 
 	logger.V(1).Info("Finished building profiler sidecar container")
 

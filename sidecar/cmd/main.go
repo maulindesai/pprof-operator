@@ -20,7 +20,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,18 +30,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	sdkconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/go-logr/logr"
 	"github.com/go-logr/zapr"
+	"github.com/maulindesai/pprof-operator/sidecar/pkg/kubelet"
 	"github.com/maulindesai/pprof-operator/sidecar/pkg/metrics"
+	"github.com/maulindesai/pprof-operator/sidecar/pkg/storage"
 	"github.com/maulindesai/pprof-operator/sidecar/pkg/types"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -66,6 +62,8 @@ type Config struct {
 	S3Bucket         string
 	S3Region         string
 	S3PathPrefix     string
+	S3Endpoint       string
+	S3ForcePathStyle bool
 	AWSAccessKeyID   string
 	AWSSecretKey     string
 
@@ -153,6 +151,16 @@ func loadConfig() (*Config, error) {
 
 	s3PathPrefix := os.Getenv("S3_PATH_PREFIX")
 
+	// Optional S3-compatible endpoint (e.g., DigitalOcean Spaces)
+	s3Endpoint := os.Getenv("S3_ENDPOINT")
+	forcePathStyle := false
+	if v := os.Getenv("S3_FORCE_PATH_STYLE"); v != "" {
+		// accept "true"/"1" (case-insensitive)
+		if v == "1" || v == "true" || v == "TRUE" || v == "True" {
+			forcePathStyle = true
+		}
+	}
+
 	awsAccessKeyID := os.Getenv("AWS_ACCESS_KEY_ID")
 	awsSecretKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
 
@@ -221,6 +229,8 @@ func loadConfig() (*Config, error) {
 		S3Bucket:         s3Bucket,
 		S3Region:         s3Region,
 		S3PathPrefix:     s3PathPrefix,
+		S3Endpoint:       s3Endpoint,
+		S3ForcePathStyle: forcePathStyle,
 		AWSAccessKeyID:   awsAccessKeyID,
 		AWSSecretKey:     awsSecretKey,
 		Namespace:        namespace,
@@ -255,257 +265,6 @@ func getScrapTarget() types.ScrapTarget {
 	}
 
 	return ScrapTarget
-}
-
-// ContainerStats represents the container stats from the kubelet API
-type ContainerStats struct {
-	Name string `json:"name"`
-	CPU  struct {
-		UsageNanoCores uint64 `json:"usageNanoCores"`
-	} `json:"cpu"`
-	Memory struct {
-		WorkingSetBytes uint64 `json:"workingSetBytes"`
-	} `json:"memory"`
-}
-
-// PodStats represents the pod stats from the kubelet API
-type PodStats struct {
-	PodRef struct {
-		Name      string `json:"name"`
-		Namespace string `json:"namespace"`
-		UID       string `json:"uid"`
-	} `json:"podRef"`
-	Containers []ContainerStats `json:"containers"`
-}
-
-// KubeletStats represents the stats from the kubelet API
-type KubeletStats struct {
-	Pods []PodStats `json:"pods"`
-}
-
-// getKubeletMetrics reads CPU and memory metrics from the kubelet API in percentage
-func getKubeletMetrics(config *Config) (float64, float64, error) {
-	// Check if we have the necessary information
-	if config.PodName == "" || config.Namespace == "" || config.TargetContainer == "" {
-		return 0, 0, fmt.Errorf("pod name, namespace, or target container not available")
-	}
-
-	// Get pod details to find the node name
-	pod, err := config.K8sClient.CoreV1().Pods(config.Namespace).Get(context.Background(), config.PodName, metav1.GetOptions{})
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to get pod details: %w", err)
-	}
-
-	nodeName := pod.Spec.NodeName
-	if nodeName == "" {
-		return 0, 0, fmt.Errorf("node name not available for pod %s", config.PodName)
-	}
-
-	logger.V(1).Info("Using node for metrics collection", "nodeName", nodeName)
-
-	// Get the kubelet API endpoint
-	// The kubelet API endpoint for container stats is /api/v1/nodes/{nodeName}/proxy/stats/summary
-	kubeletURL := fmt.Sprintf("/api/v1/nodes/%s/proxy/stats/summary", nodeName)
-	logger.V(2).Info("Constructed kubelet API URL", "url", kubeletURL)
-
-	// Use the Kubernetes client to proxy the request to the kubelet API
-	result := config.K8sClient.CoreV1().RESTClient().Get().AbsPath(kubeletURL).Do(context.Background())
-	rawData, err := result.Raw()
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to get stats from kubelet API: %w", err)
-	}
-
-	// Parse the JSON response
-	var stats KubeletStats
-	if err := json.Unmarshal(rawData, &stats); err != nil {
-		return 0, 0, fmt.Errorf("failed to parse kubelet API response: %w", err)
-	}
-
-	// Find the target pod and container in the stats
-	var cpuUsage, memoryUsage uint64
-	var cpuLimit, memoryLimit int64
-	found := false
-
-	// Find the target container in the pod spec to get resource limits
-	for _, container := range pod.Spec.Containers {
-		if container.Name == config.TargetContainer {
-			// Get CPU limit
-			if container.Resources.Limits != nil {
-				if cpuLimitQuantity, ok := container.Resources.Limits["cpu"]; ok {
-					cpuLimit = cpuLimitQuantity.MilliValue()
-				}
-			}
-			// Get memory limit
-			if container.Resources.Limits != nil {
-				if memoryLimitQuantity, ok := container.Resources.Limits["memory"]; ok {
-					memoryLimit = memoryLimitQuantity.Value()
-				}
-			}
-			break
-		}
-	}
-
-	// If no limits are set, get node capacity
-	if cpuLimit == 0 || memoryLimit == 0 {
-		logger.V(0).Info("No resource limits set for container, using node capacity",
-			"container", config.TargetContainer,
-			"namespace", config.Namespace,
-			"pod", config.PodName)
-		logger.V(0).Info("It's good practice to set CPU and memory limits for containers in pods")
-
-		node, err := config.K8sClient.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
-		if err != nil {
-			logger.Error(err, "Failed to get node details", "nodeName", nodeName)
-			return 0, 0, fmt.Errorf("failed to get node details: %w", err)
-		}
-
-		if cpuLimit == 0 {
-			if cpuCapacity, ok := node.Status.Capacity["cpu"]; ok {
-				cpuLimit = cpuCapacity.MilliValue()
-			}
-		}
-
-		if memoryLimit == 0 {
-			if memoryCapacity, ok := node.Status.Capacity["memory"]; ok {
-				memoryLimit = memoryCapacity.Value()
-			}
-		}
-	}
-
-	// Find the target pod and container in the stats
-	for _, podStats := range stats.Pods {
-		if podStats.PodRef.Namespace == config.Namespace && podStats.PodRef.Name == config.PodName {
-			for _, containerStats := range podStats.Containers {
-				if containerStats.Name == config.TargetContainer {
-					cpuUsage = containerStats.CPU.UsageNanoCores
-					memoryUsage = containerStats.Memory.WorkingSetBytes
-					found = true
-					break
-				}
-			}
-			if found {
-				break
-			}
-		}
-	}
-
-	if !found {
-		return 0, 0, fmt.Errorf("container stats not found for %s in pod %s", config.TargetContainer, config.PodName)
-	}
-
-	// Calculate percentages
-	cpuPercent := (float64(cpuUsage) / float64(cpuLimit*1000000)) * 100 // Convert milliCPU to nanoCPU
-	memPercent := (float64(memoryUsage) / float64(memoryLimit)) * 100
-
-	// Log metrics at different levels
-	logger.Info("Resource usage metrics",
-		"cpuPercent", fmt.Sprintf("%.2f%%", cpuPercent),
-		"memPercent", fmt.Sprintf("%.2f%%", memPercent))
-
-	logger.V(1).Info("Detailed resource metrics",
-		"cpuUsage", cpuUsage,
-		"cpuLimit", cpuLimit,
-		"cpuPercent", cpuPercent,
-		"memoryUsage", memoryUsage,
-		"memoryLimit", memoryLimit,
-		"memPercent", memPercent)
-
-	return cpuPercent, memPercent, nil
-}
-
-func monitorResourceUsage(ctx context.Context, config *Config) {
-	logger.Info("Starting resource usage monitoring",
-		"period", config.MonitoringPeriod,
-		"cpuThreshold", config.CPUThreshold,
-		"memThreshold", config.MemoryThreshold)
-
-	ticker := time.NewTicker(config.MonitoringPeriod)
-	defer ticker.Stop()
-
-	var lastCPUTime time.Time
-
-	// Adjust thresholds based on QoS class
-	cpuThreshold := config.CPUThreshold
-	memThreshold := config.MemoryThreshold
-
-	logger.V(1).Info("Using thresholds for profiling",
-		"cpuThreshold", cpuThreshold,
-		"memThreshold", memThreshold)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			// Get container metrics using kubelet API
-			cpuPercent, memoryPercent, err := getKubeletMetrics(config)
-			if err != nil {
-				logger.Error(err, "Error getting container metrics")
-				continue
-			}
-
-			// Update resource usage metrics
-			metrics.ResourceUsage.With(prometheus.Labels{"resource_type": "cpu"}).Set(cpuPercent)
-			metrics.ResourceUsage.With(prometheus.Labels{"resource_type": "memory"}).Set(memoryPercent)
-
-			// Check if thresholds are exceeded, using QoS-adjusted thresholds
-			cpuThresholdExceeded := cpuPercent >= float64(cpuThreshold)
-			memThresholdExceeded := memoryPercent >= float64(memThreshold)
-
-			// Log threshold status at debug level
-			logger.V(2).Info("Threshold status",
-				"cpuExceeded", cpuThresholdExceeded,
-				"memExceeded", memThresholdExceeded)
-
-			// Update threshold exceeded metrics if thresholds are exceeded
-			if cpuThresholdExceeded {
-				metrics.ThresholdExceeded.With(prometheus.Labels{"resource_type": "cpu"}).Inc()
-			}
-			if memThresholdExceeded {
-				metrics.ThresholdExceeded.With(prometheus.Labels{"resource_type": "memory"}).Inc()
-			}
-
-			// Avoid collecting profiles too frequently
-			now := time.Now()
-			if lastCPUTime.IsZero() || now.Sub(lastCPUTime) > time.Minute*5 {
-				if cpuThresholdExceeded {
-					logger.V(0).Info("CPU threshold exceeded, collecting CPU profile",
-						"cpuUsage", fmt.Sprintf("%.2f%%", cpuPercent),
-						"threshold", cpuThreshold)
-					if err := collectAndUploadProfile(ctx, config, "cpu",
-						fmt.Sprintf("CPU threshold exceeded: %.2f%%", cpuPercent)); err != nil {
-						logger.Error(err, "Failed to collect CPU profile")
-					} else {
-						logger.Info("Successfully collected CPU profile")
-					}
-					lastCPUTime = now
-				} else {
-					logger.V(2).Info("CPU threshold not exceeded or cooldown period active",
-						"cpuThresholdExceeded", cpuThresholdExceeded,
-						"cpuUsage", fmt.Sprintf("%.2f%%", cpuPercent),
-						"threshold", cpuThreshold,
-						"timeSinceLastProfile", now.Sub(lastCPUTime))
-				}
-			}
-
-			// For memory, we'll use a similar approach
-			if memThresholdExceeded {
-				logger.V(0).Info("Memory threshold exceeded, collecting heap profile",
-					"memoryUsage", fmt.Sprintf("%.2f%%", memoryPercent),
-					"threshold", memThreshold)
-				if err := collectAndUploadProfile(ctx, config, "heap",
-					fmt.Sprintf("Memory threshold exceeded: %.2f%%", memoryPercent)); err != nil {
-					logger.Error(err, "Failed to collect heap profile")
-				} else {
-					logger.Info("Successfully collected heap profile")
-				}
-			} else {
-				logger.V(2).Info("Memory threshold not exceeded",
-					"memoryUsage", fmt.Sprintf("%.2f%%", memoryPercent),
-					"threshold", memThreshold)
-			}
-		}
-	}
 }
 
 func collectAndUploadProfile(ctx context.Context, config *Config, profileType string, reason string) (err error) {
@@ -645,7 +404,16 @@ func collectAndUploadProfile(ctx context.Context, config *Config, profileType st
 	}
 
 	logger.Info("Uploading profile to S3", "bucket", config.S3Bucket, "key", s3Key)
-	if uploadErr := uploadToS3(ctx, config, profilePath, s3Key); uploadErr != nil {
+	s3cfg := storage.S3Config{
+		S3Bucket:         config.S3Bucket,
+		S3Region:         config.S3Region,
+		S3PathPrefix:     config.S3PathPrefix,
+		S3Endpoint:       config.S3Endpoint,
+		S3ForcePathStyle: config.S3ForcePathStyle,
+		AWSAccessKeyID:   config.AWSAccessKeyID,
+		AWSSecretKey:     config.AWSSecretKey,
+	}
+	if uploadErr := storage.UploadToS3(ctx, s3cfg, profilePath, s3Key); uploadErr != nil {
 		logger.Error(uploadErr, "Failed to upload profile to S3",
 			"bucket", config.S3Bucket,
 			"key", s3Key,
@@ -658,94 +426,6 @@ func collectAndUploadProfile(ctx context.Context, config *Config, profileType st
 		"bucket", config.S3Bucket,
 		"key", s3Key)
 	return nil
-}
-
-func uploadToS3(ctx context.Context, config *Config, filePath, s3Key string) error {
-	logger.V(1).Info("Starting S3 upload process", "filePath", filePath, "s3Key", s3Key)
-
-	// Create AWS config
-	var awsConfig aws.Config
-	var err error
-
-	if config.AWSAccessKeyID != "" && config.AWSSecretKey != "" {
-		// Use provided credentials
-		logger.V(1).Info("Using provided AWS credentials")
-		awsConfig, err = config.LoadWithCredentials(ctx)
-	} else {
-		// Use default credentials provider chain
-		logger.V(1).Info("Using default AWS credentials provider chain")
-		awsConfig, err = config.LoadDefaultConfig(ctx)
-	}
-
-	if err != nil {
-		logger.Error(err, "Failed to load AWS config", "region", config.S3Region)
-		return fmt.Errorf("failed to load AWS config: %w", err)
-	}
-	logger.V(2).Info("AWS config loaded successfully", "region", config.S3Region)
-
-	// Create S3 client
-	s3Client := s3.NewFromConfig(awsConfig)
-	logger.V(2).Info("S3 client created")
-
-	// Open the file
-	logger.V(2).Info("Opening file for upload", "path", filePath)
-	file, err := os.Open(filePath)
-	if err != nil {
-		logger.Error(err, "Failed to open file", "path", filePath)
-		return fmt.Errorf("failed to open file: %w", err)
-	}
-	defer func() {
-		logger.V(2).Info("Closing file", "path", filePath)
-		if closeErr := file.Close(); closeErr != nil {
-			logger.Error(closeErr, "Error closing file", "path", filePath)
-			if err == nil {
-				err = closeErr
-			}
-		}
-	}()
-
-	// Upload the file
-	logger.Info("Uploading file to S3", "bucket", config.S3Bucket, "key", s3Key)
-	startTime := time.Now()
-	_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(config.S3Bucket),
-		Key:    aws.String(s3Key),
-		Body:   file,
-	})
-	if err != nil {
-		// Increment upload error metric
-		metrics.ProfileUploadErrors.Inc()
-		logger.Error(err, "Failed to upload file to S3",
-			"bucket", config.S3Bucket,
-			"key", s3Key,
-			"duration", time.Since(startTime))
-		return fmt.Errorf("failed to upload file to S3: %w", err)
-	}
-
-	// Increment upload success metric
-	metrics.ProfilesUploaded.Inc()
-	logger.Info("Successfully uploaded file to S3",
-		"bucket", config.S3Bucket,
-		"key", s3Key,
-		"duration", time.Since(startTime))
-	return nil
-}
-
-func (c *Config) LoadWithCredentials(ctx context.Context) (aws.Config, error) {
-	return sdkconfig.LoadDefaultConfig(ctx,
-		sdkconfig.WithRegion(c.S3Region),
-		sdkconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
-			c.AWSAccessKeyID,
-			c.AWSSecretKey,
-			"",
-		)),
-	)
-}
-
-func (c *Config) LoadDefaultConfig(ctx context.Context) (aws.Config, error) {
-	return sdkconfig.LoadDefaultConfig(ctx,
-		sdkconfig.WithRegion(c.S3Region),
-	)
 }
 
 func main() {
@@ -793,6 +473,9 @@ func main() {
 
 	// Set global logger
 	logger = zapr.NewLogger(zapLog)
+	// propagate logger to internal packages
+	storage.SetLogger(logger)
+	kubelet.SetLogger(logger)
 
 	logger.Info("Starting pprof sidecar with kubelet API metrics (metrics.k8s.io) and QoS support",
 		"runtimes", "Docker, containerd, CRI-O")
@@ -833,7 +516,7 @@ func main() {
 		cancel()
 	}()
 
-	// Start metrics server on port 8080
+	// Start a metrics server on port 8080
 	metricsAddr := os.Getenv("METRICS_ADDR")
 	if metricsAddr == "" {
 		metricsAddr = ":8080"
@@ -848,4 +531,100 @@ func main() {
 
 	// Start monitoring
 	monitorResourceUsage(ctx, config)
+}
+
+// monitorResourceUsage periodically fetches usage and triggers profiling when thresholds exceeded
+func monitorResourceUsage(ctx context.Context, config *Config) {
+	logger.Info("Starting resource usage monitoring",
+		"period", config.MonitoringPeriod,
+		"cpuThreshold", config.CPUThreshold,
+		"memThreshold", config.MemoryThreshold)
+
+	ticker := time.NewTicker(config.MonitoringPeriod)
+	defer ticker.Stop()
+
+	var lastCPUTime time.Time
+
+	cpuThreshold := config.CPUThreshold
+	memThreshold := config.MemoryThreshold
+
+	logger.V(1).Info("Using thresholds for profiling",
+		"cpuThreshold", cpuThreshold,
+		"memThreshold", memThreshold)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Get container metrics using kubelet API
+			cpuPercent, memoryPercent, err := kubelet.GetKubeletMetrics(kubelet.Config{
+				Namespace:       config.Namespace,
+				PodName:         config.PodName,
+				TargetContainer: config.TargetContainer,
+				K8sClient:       config.K8sClient,
+			})
+			if err != nil {
+				logger.Error(err, "Error getting container metrics")
+				continue
+			}
+
+			// Update resource usage metrics
+			metrics.ResourceUsage.With(prometheus.Labels{"resource_type": "cpu"}).Set(cpuPercent)
+			metrics.ResourceUsage.With(prometheus.Labels{"resource_type": "memory"}).Set(memoryPercent)
+
+			// Check thresholds
+			cpuThresholdExceeded := cpuPercent >= float64(cpuThreshold)
+			memThresholdExceeded := memoryPercent >= float64(memThreshold)
+
+			logger.V(2).Info("Threshold status",
+				"cpuExceeded", cpuThresholdExceeded,
+				"memExceeded", memThresholdExceeded)
+
+			if cpuThresholdExceeded {
+				metrics.ThresholdExceeded.With(prometheus.Labels{"resource_type": "cpu"}).Inc()
+			}
+			if memThresholdExceeded {
+				metrics.ThresholdExceeded.With(prometheus.Labels{"resource_type": "memory"}).Inc()
+			}
+
+			now := time.Now()
+			if lastCPUTime.IsZero() || now.Sub(lastCPUTime) > time.Minute*5 {
+				if cpuThresholdExceeded {
+					logger.V(0).Info("CPU threshold exceeded, collecting CPU profile",
+						"cpuUsage", fmt.Sprintf("%.2f%%", cpuPercent),
+						"threshold", cpuThreshold)
+					if err := collectAndUploadProfile(ctx, config, "cpu",
+						fmt.Sprintf("CPU threshold exceeded: %.2f%%", cpuPercent)); err != nil {
+						logger.Error(err, "Failed to collect CPU profile")
+					} else {
+						logger.Info("Successfully collected CPU profile")
+					}
+					lastCPUTime = now
+				} else {
+					logger.V(2).Info("CPU threshold not exceeded or cooldown period active",
+						"cpuThresholdExceeded", cpuThresholdExceeded,
+						"cpuUsage", fmt.Sprintf("%.2f%%", cpuPercent),
+						"threshold", cpuThreshold,
+						"timeSinceLastProfile", now.Sub(lastCPUTime))
+				}
+			}
+
+			if memThresholdExceeded {
+				logger.V(0).Info("Memory threshold exceeded, collecting heap profile",
+					"memoryUsage", fmt.Sprintf("%.2f%%", memoryPercent),
+					"threshold", memThreshold)
+				if err := collectAndUploadProfile(ctx, config, "heap",
+					fmt.Sprintf("Memory threshold exceeded: %.2f%%", memoryPercent)); err != nil {
+					logger.Error(err, "Failed to collect heap profile")
+				} else {
+					logger.Info("Successfully collected heap profile")
+				}
+			} else {
+				logger.V(2).Info("Memory threshold not exceeded",
+					"memoryUsage", fmt.Sprintf("%.2f%%", memoryPercent),
+					"threshold", memThreshold)
+			}
+		}
+	}
 }
