@@ -1,9 +1,8 @@
-# [MANAGER]: Manager Deployment Configurations
 controllerManager:
   replicas: 1
   container:
     image:
-      repository: controller
+      repository: ghcr.io/maulindesai/pprof-controller
       tag: latest
     args:
       - "--leader-elect"

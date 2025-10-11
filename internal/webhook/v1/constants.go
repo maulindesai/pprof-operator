@@ -21,12 +21,21 @@ const (
 	// AnnotationProfilerEnable is the annotation key used to enable/disable the profiler sidecar
 	AnnotationProfilerEnable = "profiler.pprof.dev/enable"
 
+	// AnnotationProfilerName is the annotation key used to specify the name of the profiler
+	AnnotationProfilerName = "profiler.pprof.dev/name"
+
 	// AnnotationTargetContainer is the annotation key used to specify the target container for profiling
 	AnnotationTargetContainer = "profiler.pprof.dev/target_container"
 
-	// Scraping annotations
+	// AnnotationScrapeURL Scraping annotations
 	// AnnotationScrapeURL is the annotation key used to specify the URL to scrape for profiling data
 	AnnotationScrapeURL = "profiler.pprof.dev/scrape_url"
+
+	// AnnotationS3Endpoint S3/Storage annotations for sidecar configuration
+	// AnnotationS3Endpoint is the annotation key used to specify a custom S3-compatible endpoint (e.g., DigitalOcean Spaces)
+	AnnotationS3Endpoint = "profiler.pprof.dev/s3_endpoint"
+	// AnnotationS3ForcePathStyle controls whether to use path-style addressing for S3-compatible endpoints
+	AnnotationS3ForcePathStyle = "profiler.pprof.dev/s3_force_path_style"
 
 	// AnnotationScrapeAuthType is the annotation key used to specify the authentication type for scraping
 	AnnotationScrapeAuthType = "profiler.pprof.dev/scrape_auth_type"

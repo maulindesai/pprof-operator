@@ -2,6 +2,7 @@ package v1
 
 import (
 	"fmt"
+
 	"github.com/go-logr/logr"
 	observabilityv1 "github.com/maulindesai/pprof-operator/api/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -109,6 +110,20 @@ func getAWSConfiguration(profiler *observabilityv1.Profiler, logger logr.Logger)
 						Key: "AWS_SECRET_ACCESS_KEY",
 					},
 				},
+			},
+		}...)
+	} else if profiler.Spec.AwsAccessKeyId != "" && profiler.Spec.AwsSecretAccessKey != "" {
+		logger.V(1).Info("Configuring AWS credentials from annotations",
+			"accessKeyId", profiler.Spec.AwsAccessKeyId,
+			"secretAccessKey", profiler.Spec.AwsSecretAccessKey)
+		envVars = append(envVars, []corev1.EnvVar{
+			{
+				Name:  "AWS_ACCESS_KEY_ID",
+				Value: profiler.Spec.AwsAccessKeyId,
+			},
+			{
+				Name:  "AWS_SECRET_ACCESS_KEY",
+				Value: profiler.Spec.AwsSecretAccessKey,
 			},
 		}...)
 	} else {

@@ -1,8 +1,8 @@
 # pprof-operator
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Go Report Card](https://goreportcard.com/badge/github.com/yourusername/pprof-operator)](https://goreportcard.com/report/github.com/yourusername/pprof-operator)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/yourusername/pprof-operator)](https://github.com/yourusername/pprof-operator)
+[![Go Report Card](https://goreportcard.com/badge/github.com/maulindesai/pprof-operator)](https://goreportcard.com/report/github.com/maulindesai/pprof-operator)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/maulindesai/pprof-operator)](https://github.com/maulindesai/pprof-operator)
 [![Kubernetes](https://img.shields.io/badge/kubernetes-%23326ce5.svg?style=flat&logo=kubernetes&logoColor=white)](https://kubernetes.io/)
 [![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=flat&logo=docker&logoColor=white)](https://www.docker.com/)
 
@@ -185,7 +185,7 @@ To minimize performance impact:
 
 #### 1. Clone the repository
 ```sh
-git clone https://github.com/yourusername/pprof-operator.git
+git clone https://github.com/maulindesai/pprof-operator.git
 cd pprof-operator
 ```
 
@@ -243,43 +243,36 @@ metadata:
   name: example-profiler
   namespace: default  # Change to your namespace
 spec:
-  # Select pods to monitor by labels
-  selector:
-    matchLabels:
-      app: my-application
-
-  # Target container to monitor
-  targetContainer: app
-
   # CPU threshold in percentage (0-100) that triggers profiling
   cpuThreshold: 70
 
   # Memory threshold in percentage (0-100) that triggers profiling
   memoryThreshold: 80
 
-  # Monitoring period in seconds (default: 15)
+  # Monitoring period in seconds to check resource usage (default: 15)
   monitoringPeriod: 15
 
-  # Duration in seconds to collect the profile
-  profileDuration: 30
-
-  # S3 bucket to upload profiles to
+  # S3 bucket to upload profiles to (required)
   s3Bucket: my-profiles-bucket
 
   # S3 region (default: us-east-1)
   s3Region: us-west-2
 
-  # S3 path prefix for storing profiles
+  # S3 path prefix for storing profiles (optional)
   s3PathPrefix: profiles/
 
-  # AWS credentials secret name
+  # Option A: Use AWS credentials from a secret (recommended)
   awsCredentialsSecret: aws-credentials
 
-  # Optional: Scrape URL configuration
+  # Option B: Provide AWS credentials inline (not recommended for production)
+  # AWS_ACCESS_KEY_ID: "your-access-key"
+  # AWS_SECRET_ACCESS_KEY: "your-secret-key"
+
+  # Optional: Scrape URL configuration for protected pprof endpoints
   scrapURL:
     scrapeURL: "http://localhost:8080/debug/pprof"
     auth:
-      type: Basic
+      type: Basic  # or "None"
       basicAuth:
         username: "admin"
         password: "password"
@@ -305,16 +298,15 @@ The Profiler CRD supports the following configuration options:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `selector` | `LabelSelector` | Yes | - | Label selector to identify pods to monitor |
-| `targetContainer` | `string` | Yes | - | Name of the container to monitor in the selected pods |
-| `cpuThreshold` | `int32` | No | 80 | CPU usage percentage (0-100) that triggers profiling |
-| `memoryThreshold` | `int32` | No | 80 | Memory usage percentage (0-100) that triggers profiling |
+| `cpuThreshold` | `int32` | No | - | CPU usage percentage (0-100) that triggers profiling |
+| `memoryThreshold` | `int32` | No | - | Memory usage percentage (0-100) that triggers profiling |
 | `monitoringPeriod` | `int32` | No | 15 | Interval in seconds to check resource usage |
-| `profileDuration` | `int32` | No | 30 | Duration in seconds to collect profiles |
 | `s3Bucket` | `string` | Yes | - | S3 bucket name for storing profiles |
 | `s3Region` | `string` | No | us-east-1 | AWS region for the S3 bucket |
 | `s3PathPrefix` | `string` | No | - | Path prefix for storing profiles in the S3 bucket |
-| `awsCredentialsSecret` | `string` | Yes | - | Name of the secret containing AWS credentials |
+| `awsCredentialsSecret` | `string` | No | - | Name of the secret containing AWS credentials (if not using inline creds or instance role) |
+| `AWS_ACCESS_KEY_ID` | `string` | No | - | Inline AWS access key ID (alternative to using a secret) |
+| `AWS_SECRET_ACCESS_KEY` | `string` | No | - | Inline AWS secret access key (alternative to using a secret) |
 | `scrapURL` | `ScrapTarget` | No | - | Configuration for scraping pprof endpoints |
 
 ##### ScrapTarget Configuration
@@ -332,7 +324,7 @@ The `auth` field supports the following authentication methods:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `type` | `string` | Yes | Basic | Authentication type (currently only "Basic" is supported) |
+| `type` | `string` | Yes | Basic | Authentication type ("Basic" or "None") |
 | `basicAuth` | `BasicAuth` | No | - | Basic authentication configuration |
 
 ##### BasicAuth Configuration
@@ -584,7 +576,7 @@ We welcome contributions to the pprof-operator! Here's how you can help:
 ### Ways to Contribute
 
 #### 🐛 Report Issues
-If you find a bug or have a feature request, please [open an issue](https://github.com/yourusername/pprof-operator/issues/new) with:
+If you find a bug or have a feature request, please [open an issue](https://github.com/maulindesai/pprof-operator/issues/new) with:
 - A clear description of the problem
 - Steps to reproduce
 - Expected vs. actual behavior
