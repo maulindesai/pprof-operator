@@ -18,7 +18,7 @@ package v1
 
 import (
 	"fmt"
-	"os"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -48,10 +48,11 @@ func BuildProfilerSidecar(profiler *observabilityv1.Profiler, pod *corev1.Pod) (
 	}
 
 	// Create the base container with standard configuration
-	// Use environment variable for sidecar image if set, otherwise use default
+	// Determine sidecar image: annotation > default
 	sidecarImage := "ghcr.io/maulindesai/pprof-operator/pprof-sidecar:latest"
-	if envImage := os.Getenv("PPROF_SIDECAR_IMAGE"); envImage != "" {
-		sidecarImage = envImage
+	if annImage, ok := pod.Annotations[AnnotationSidecarImage]; ok && strings.TrimSpace(annImage) != "" {
+		logger.Info("Overriding sidecar image from annotation", "annotation", AnnotationSidecarImage, "image", annImage)
+		sidecarImage = strings.TrimSpace(annImage)
 	}
 
 	//TODO need to add metrics port
@@ -127,6 +128,17 @@ func BuildProfilerSidecar(profiler *observabilityv1.Profiler, pod *corev1.Pod) (
 			Name:  "S3_FORCE_PATH_STYLE",
 			Value: fps,
 		})
+	}
+
+	// Enable debug logging if requested via annotation
+	if dbg, ok := pod.Annotations[AnnotationDebug]; ok {
+		v := strings.ToLower(strings.TrimSpace(dbg))
+		if v == "true" || v == "1" || v == "debug" {
+			logger.Info("Enabling debug logging for sidecar via annotation", "annotation", AnnotationDebug, "value", dbg)
+			sidecarContainer.Env = append(sidecarContainer.Env, corev1.EnvVar{Name: "LOG_LEVEL", Value: "debug"})
+			// Backward compatibility env var
+			sidecarContainer.Env = append(sidecarContainer.Env, corev1.EnvVar{Name: "DEBUG", Value: "true"})
+		}
 	}
 
 	logger.V(1).Info("Finished building profiler sidecar container")

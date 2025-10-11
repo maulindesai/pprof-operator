@@ -27,6 +27,9 @@ const (
 	// AnnotationTargetContainer is the annotation key used to specify the target container for profiling
 	AnnotationTargetContainer = "profiler.pprof.dev/target_container"
 
+	// AnnotationSidecarImage allows overriding the sidecar image per pod
+	AnnotationSidecarImage = "profiler.pprof.dev/sidecar_image"
+
 	// AnnotationScrapeURL Scraping annotations
 	// AnnotationScrapeURL is the annotation key used to specify the URL to scrape for profiling data
 	AnnotationScrapeURL = "profiler.pprof.dev/scrape_url"
@@ -54,4 +57,8 @@ const (
 
 	// AnnotationScrapeAuthPasswordKey is the annotation key used to specify the password key in the secret
 	AnnotationScrapeAuthPasswordKey = "profiler.pprof.dev/scrape_auth_password_key"
+
+	// AnnotationDebug enables debug logging for the sidecar when set to a truthy value
+	// Supported values: "true", "1", "debug" (case-insensitive)
+	AnnotationDebug = "profiler.pprof.dev/debug"
 )

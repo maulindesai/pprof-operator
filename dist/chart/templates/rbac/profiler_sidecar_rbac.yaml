@@ -44,7 +44,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: pprof-sidecar
-    namespace: default
+    namespace: dev
 roleRef:
   kind: ClusterRole
   name: node-proxy-reader

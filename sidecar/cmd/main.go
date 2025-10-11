@@ -31,14 +31,12 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/go-logr/zapr"
 	"github.com/maulindesai/pprof-operator/sidecar/pkg/kubelet"
+	"github.com/maulindesai/pprof-operator/sidecar/pkg/logging"
 	"github.com/maulindesai/pprof-operator/sidecar/pkg/metrics"
 	"github.com/maulindesai/pprof-operator/sidecar/pkg/storage"
 	"github.com/maulindesai/pprof-operator/sidecar/pkg/types"
 	"github.com/prometheus/client_golang/prometheus"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -429,51 +427,12 @@ func collectAndUploadProfile(ctx context.Context, config *Config, profileType st
 }
 
 func main() {
-	// Initialize structured logger
-	zapConfig := zap.NewProductionConfig()
-	zapConfig.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-	zapConfig.Level = zap.NewAtomicLevelAt(zapcore.InfoLevel)
+	// Initialize structured logger via shared logging package
+	l, cleanup := logging.InitFromEnv()
+	defer cleanup()
 
-	// Enable development mode if requested
-	logLevel := os.Getenv("LOG_LEVEL")
-	if logLevel != "" {
-		switch logLevel {
-		case "debug":
-			zapConfig.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
-		case "info":
-			zapConfig.Level = zap.NewAtomicLevelAt(zapcore.InfoLevel)
-		case "warn", "warning":
-			zapConfig.Level = zap.NewAtomicLevelAt(zapcore.WarnLevel)
-		case "error":
-			zapConfig.Level = zap.NewAtomicLevelAt(zapcore.ErrorLevel)
-		case "panic":
-			zapConfig.Level = zap.NewAtomicLevelAt(zapcore.PanicLevel)
-		default:
-			fmt.Printf("Unknown log level: %s, using default (info)\n", logLevel)
-		}
-	}
-
-	// For backward compatibility
-	if os.Getenv("DEBUG") == "true" {
-		zapConfig = zap.NewDevelopmentConfig()
-		zapConfig.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
-	}
-
-	zapLog, err := zapConfig.Build()
-	if err != nil {
-		fmt.Printf("Error initializing logger: %v\n", err)
-		os.Exit(1)
-	}
-	defer func(zapLog *zap.Logger) {
-		err := zapLog.Sync()
-		if err != nil {
-			fmt.Printf("Error syncing logger: %v\n", err)
-		}
-	}(zapLog)
-
-	// Set global logger
-	logger = zapr.NewLogger(zapLog)
-	// propagate logger to internal packages
+	// Set global logger and propagate to internal packages
+	logger = l
 	storage.SetLogger(logger)
 	kubelet.SetLogger(logger)
 
