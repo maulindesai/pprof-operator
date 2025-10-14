@@ -9,7 +9,7 @@
 A Kubernetes operator for automatically collecting pprof profiles from Go applications when CPU or memory thresholds are exceeded, helping you diagnose and resolve performance issues in production environments.
 
 <div align="center">
-  <img src="https://go.dev/images/gophers/headlamp-colorized.svg" alt="Go Gopher" width="300"/>
+  <img src="https://github.com/maulindesai/pprof-operator/blob/main/brand/logo.svg" alt="Go Gopher" width="300"/>
 </div>
 
 ## 📑 Table of Contents
@@ -18,24 +18,25 @@ A Kubernetes operator for automatically collecting pprof profiles from Go applic
 - [Architecture](#-architecture)
 - [Metrics](#-metrics)
 - [Security Considerations](#-security-considerations)
-  - [Performance Impact Considerations](#performance-impact-considerations)
+    - [Performance Impact Considerations](#performance-impact-considerations)
+- [Quick Start](#-quick-start)
 - [Getting Started](#-getting-started)
-  - [Prerequisites](#prerequisites)
-  - [Installation](#installation)
-  - [Configuration](#configuration)
-    - [Profiler CRD Configuration Reference](#profiler-crd-configuration-reference)
-  - [Uninstallation](#uninstallation)
+    - [Prerequisites](#prerequisites)
+    - [Installation](#installation)
+    - [Configuration](#configuration)
+        - [Profiler CRD Configuration Reference](#profiler-crd-configuration-reference)
+    - [Uninstallation](#uninstallation)
 - [Sample Application](#-sample-application)
-  - [Viewing and Analyzing Profiles](#viewing-and-analyzing-profiles)
-  - [Profile Analysis Guide](#profile-analysis-guide)
-  - [Common Performance Issues to Look For](#common-performance-issues-to-look-for)
-  - [Advanced Analysis Techniques](#advanced-analysis-techniques)
+    - [Viewing and Analyzing Profiles](#viewing-and-analyzing-profiles)
+    - [Profile Analysis Guide](#profile-analysis-guide)
+    - [Common Performance Issues to Look For](#common-performance-issues-to-look-for)
+    - [Advanced Analysis Techniques](#advanced-analysis-techniques)
 - [Distribution](#-distribution)
 - [Troubleshooting](#-troubleshooting)
 - [Contributing](#-contributing)
 - [Additional Resources](#-additional-resources)
-  - [Related Projects](#related-projects)
-  - [Further Reading](#further-reading)
+    - [Related Projects](#related-projects)
+    - [Further Reading](#further-reading)
 - [License](#license)
 
 ## 📋 Overview
@@ -50,8 +51,7 @@ The pprof-operator is designed to help developers and operators diagnose perform
 **Key Features:**
 - Threshold-based profiling (CPU and memory)
 - Automatic sidecar injection via webhooks
-- Support for multiple container runtimes (Docker, containerd, CRI-O)
-- Authentication support for pprof endpoints
+- Authentication support for pprof endpoints (Basic Authentication.)
 - Configurable monitoring periods and profile durations
 - Structured logging with different verbosity levels
 - Comprehensive metrics for monitoring operator performance
@@ -162,10 +162,10 @@ The pprof-operator is designed to have minimal impact on your applications:
 
 1. **Resource Usage**: The sidecar container has low resource requirements (10m CPU, 64Mi memory by default)
 2. **Monitoring Overhead**: The sidecar polls the Kubernetes metrics API at configurable intervals (default: 15s)
-3. **Profiling Impact**: 
-   - CPU profiling adds a small overhead (typically <5%) during the profiling period
-   - Memory profiling has negligible impact but may pause the application briefly when collecting heap profiles
-   - Profile collection is rate-limited to avoid excessive profiling
+3. **Profiling Impact**:
+    - CPU profiling adds a small overhead (typically <5%) during the profiling period
+    - Memory profiling has negligible impact but may pause the application briefly when collecting heap profiles
+    - Profile collection is rate-limited to avoid excessive profiling
 4. **Network Traffic**: Profiles are uploaded to S3 only when thresholds are exceeded, not continuously
 
 To minimize performance impact:
@@ -173,6 +173,120 @@ To minimize performance impact:
 - Configure longer monitoring periods for non-critical applications
 - Consider using different thresholds for different environments (dev, staging, prod)
 - Monitor the resource usage of the sidecar container itself
+
+## ⚡ Quick Start
+
+Get the operator running and collect your first profiles in a few minutes.
+
+1) Install the operator with Helm
+
+```sh
+# From the repo root, install into its own namespace (creates it if missing)
+helm upgrade --install pprof-operator charts/pprof-operator -n pprof-operator --create-namespace
+```
+
+# Optional: override image repo/tag or other values
+```sh
+helm upgrade --install pprof-operator charts/pprof-operator -n pprof-operator \
+  --set controllerManager.container.image.repository=ghcr.io/maulindesai/pprof-controller \
+  --set controllerManager.container.image.tag=latest
+```
+
+2) Create AWS credentials secret (for uploading profiles to S3)
+
+Use the provided example and edit with your access key/secret:
+
+```sh
+kubectl apply -f config/samples/examples/sample-app/aws-credentials.yaml
+```
+
+3) Create a Profiler resource
+
+Create a minimal Profiler (name: profiler-sample). Adjust bucket/region/path as needed.
+
+```yaml
+apiVersion: observability.pprof-operator.dev/v1
+kind: Profiler
+metadata:
+  name: profiler-sample
+spec:
+  cpuThreshold: 70
+  memoryThreshold: 80
+  monitoringPeriod: 5
+  s3Bucket: "your-bucket"
+  s3Region: "us-east-1"
+  s3PathPrefix: "profiles/sample-app"
+  awsCredentialsSecret: "aws-credentials"
+```
+
+Apply it:
+
+```sh
+kubectl apply -f - <<'EOF'
+apiVersion: observability.pprof-operator.dev/v1
+kind: Profiler
+metadata:
+  name: profiler-sample
+spec:
+  cpuThreshold: 70
+  memoryThreshold: 80
+  monitoringPeriod: 5
+  s3Bucket: "your-bucket"
+  s3Region: "us-east-1"
+  s3PathPrefix: "profiles/sample-app"
+  awsCredentialsSecret: "aws-credentials"
+EOF
+```
+
+4) Deploy a sample app and annotate it for profiling
+
+You can use the provided sample app, which exposes pprof on :8080. Make sure to include the profiler name annotation.
+
+```sh
+# Build and load the sample app image (optional; you can also use your own app)
+# docker build -t sample-app:latest config/samples/examples/sample-app
+
+# Deploy the sample app
+kubectl apply -f config/samples/examples/sample-app/deployment.yaml
+
+# Add the profiler name annotation required by the webhook (if not already present)
+kubectl annotate deploy/pprof-sample-app profiler.pprof.dev/name=profiler-sample --overwrite
+```
+
+Required pod annotations:
+- profiler.pprof.dev/enable: "true"![logo.jpeg](../../../Downloads/logo.jpeg)
+- profiler.pprof.dev/name: "profiler-sample" (must match the Profiler resource name)
+- profiler.pprof.dev/target_container: name of your app container (e.g., "app")
+- profiler.pprof.dev/scrape_url: pprof base URL (e.g., "http://localhost:8080/debug/pprof")
+
+Optional:
+- profiler.pprof.dev/sidecar_metrics_port: "9090" (override sidecar metrics port; default 8080)
+
+5) Verify the sidecar was injected
+
+```sh
+kubectl get pods -l app=pprof-sample-app -o=jsonpath='{range .items[*]}{.metadata.name}{"\t"}{range .spec.containers[*]}{.name}{","}{end}{"\n"}{end}'
+```
+
+Look for a container named "pprof-sidecar".
+
+6) Access sidecar metrics (Prometheus)
+
+```sh
+# Default port
+kubectl port-forward deploy/pprof-sample-app 8080:8080
+curl http://localhost:8080/metrics
+
+# If you set a custom port via annotation (e.g., 9090)
+# kubectl port-forward deploy/pprof-sample-app 9090:9090
+# curl http://localhost:9090/metrics
+```
+
+7) Check profiles in S3
+
+Profiles are uploaded when CPU/memory thresholds are exceeded under the configured bucket/path.
+
+---
 
 ## 🚀 Getting Started
 
@@ -430,20 +544,20 @@ The pprof tool provides several ways to analyze your profiles:
    go tool pprof -http=:8081 ./cpu.pprof
    ```
    This opens a web interface with multiple views:
-   - **Graph**: Visual call graph showing where time is spent
-   - **Flame Graph**: Hierarchical view of call stacks
-   - **Top**: Functions sorted by resource consumption
-   - **Source**: Annotated source code showing hot spots
+    - **Graph**: Visual call graph showing where time is spent
+    - **Flame Graph**: Hierarchical view of call stacks
+    - **Top**: Functions sorted by resource consumption
+    - **Source**: Annotated source code showing hot spots
 
 2. **Terminal UI** (useful for quick analysis or remote servers):
    ```sh
    go tool pprof ./cpu.pprof
    ```
    Common commands in the interactive terminal:
-   - `top`: Show top functions by CPU time
-   - `list <function>`: Show source code for a function
-   - `web`: Generate and open a SVG call graph (requires Graphviz)
-   - `help`: Show all available commands
+    - `top`: Show top functions by CPU time
+    - `list <function>`: Show source code for a function
+    - `web`: Generate and open a SVG call graph (requires Graphviz)
+    - `help`: Show all available commands
 
 3. **Comparing Profiles** (to identify changes over time):
    ```sh
@@ -456,21 +570,21 @@ The pprof tool provides several ways to analyze your profiles:
 When analyzing profiles, look for these common patterns:
 
 1. **CPU Profiles**:
-   - Functions consuming excessive CPU time
-   - Unexpected hot spots in seemingly simple code
-   - Excessive garbage collection activity
-   - Inefficient algorithms with high complexity
+    - Functions consuming excessive CPU time
+    - Unexpected hot spots in seemingly simple code
+    - Excessive garbage collection activity
+    - Inefficient algorithms with high complexity
 
 2. **Memory Profiles**:
-   - Memory leaks (objects that aren't being garbage collected)
-   - Excessive allocations in hot code paths
-   - Large temporary objects that could be avoided
-   - String concatenation in loops (consider using strings.Builder)
+    - Memory leaks (objects that aren't being garbage collected)
+    - Excessive allocations in hot code paths
+    - Large temporary objects that could be avoided
+    - String concatenation in loops (consider using strings.Builder)
 
 3. **Block Profiles** (if enabled):
-   - Excessive lock contention
-   - Long-held locks blocking other goroutines
-   - Inefficient synchronization patterns
+    - Excessive lock contention
+    - Long-held locks blocking other goroutines
+    - Inefficient synchronization patterns
 
 #### Advanced Analysis Techniques
 
@@ -521,7 +635,7 @@ kubectl apply -f https://raw.githubusercontent.com/<org>/pprof-operator/<tag or 
 kubebuilder edit --plugins=helm/v1-alpha
 ```
 
-2. A chart will be generated under 'dist/chart' that users can install.
+2. The Helm chart is located under 'charts/pprof-operator' that users can install.
 
 > **NOTE:** When updating the project, remember to update the Helm Chart using the same command to sync changes. For webhooks, use the '--force' flag and manually reapply any custom configuration.
 
