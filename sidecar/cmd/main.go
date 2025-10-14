@@ -395,7 +395,7 @@ func collectAndUploadProfile(ctx context.Context, config *Config, profileType st
 	// Upload the profile to S3
 	s3Key := profileFilename
 	if config.S3PathPrefix != "" {
-		s3Key = filepath.Join(config.S3PathPrefix, profileFilename)
+		s3Key = filepath.Join(config.S3PathPrefix, config.PodName, profileFilename)
 		logger.V(1).Info("Using S3 path prefix", "prefix", config.S3PathPrefix, "key", s3Key)
 	} else {
 		logger.V(1).Info("No S3 path prefix specified, using filename as key", "key", s3Key)
@@ -553,7 +553,7 @@ func monitorResourceUsage(ctx context.Context, config *Config) {
 					logger.V(0).Info("CPU threshold exceeded, collecting CPU profile",
 						"cpuUsage", fmt.Sprintf("%.2f%%", cpuPercent),
 						"threshold", cpuThreshold)
-					if err := collectAndUploadProfile(ctx, config, "cpu",
+					if err := collectAndUploadProfile(ctx, config, "profile",
 						fmt.Sprintf("CPU threshold exceeded: %.2f%%", cpuPercent)); err != nil {
 						logger.Error(err, "Failed to collect CPU profile")
 					} else {

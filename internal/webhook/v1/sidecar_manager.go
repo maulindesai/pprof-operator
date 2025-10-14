@@ -18,6 +18,7 @@ package v1
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -55,7 +56,6 @@ func BuildProfilerSidecar(profiler *observabilityv1.Profiler, pod *corev1.Pod) (
 		sidecarImage = strings.TrimSpace(annImage)
 	}
 
-	//TODO need to add metrics port
 	sidecarContainer := corev1.Container{
 		Name:            "pprof-sidecar",
 		Image:           sidecarImage,
@@ -140,6 +140,27 @@ func BuildProfilerSidecar(profiler *observabilityv1.Profiler, pod *corev1.Pod) (
 			sidecarContainer.Env = append(sidecarContainer.Env, corev1.EnvVar{Name: "DEBUG", Value: "true"})
 		}
 	}
+
+	// Configure metrics port and env (default 8080, override via annotation)
+	metricsPort := 8080
+	if annPort, ok := pod.Annotations[AnnotationSidecarMetricsPort]; ok && strings.TrimSpace(annPort) != "" {
+		p, err := strconv.Atoi(strings.TrimSpace(annPort))
+		if err != nil || p <= 0 || p > 65535 {
+			logger.Error(fmt.Errorf("invalid metrics port: %s", annPort), "Invalid metrics port in annotation, falling back to default", "annotation", AnnotationSidecarMetricsPort)
+		} else {
+			metricsPort = p
+		}
+	}
+	// Expose the container port and set METRICS_ADDR for the sidecar process
+	sidecarContainer.Ports = append(sidecarContainer.Ports, corev1.ContainerPort{
+		Name:          "metrics",
+		ContainerPort: int32(metricsPort),
+		Protocol:      corev1.ProtocolTCP,
+	})
+	sidecarContainer.Env = append(sidecarContainer.Env, corev1.EnvVar{
+		Name:  "METRICS_ADDR",
+		Value: fmt.Sprintf(":%d", metricsPort),
+	})
 
 	logger.V(1).Info("Finished building profiler sidecar container")
 
