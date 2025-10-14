@@ -8,8 +8,8 @@
 
 A Kubernetes operator for automatically collecting pprof profiles from Go applications when CPU or memory thresholds are exceeded, helping you diagnose and resolve performance issues in production environments.
 
-<div align="center">
-  <img src="https://github.com/maulindesai/pprof-operator/blob/main/brand/logo.svg" alt="Go Gopher" width="300"/>
+<div style="text-align: center;">
+  <img src="https://github.com/maulindesai/pprof-operator/blob/main/brand/logo.svg" alt="pprof-operator" width="300"/>
 </div>
 
 ## 📑 Table of Contents
@@ -20,12 +20,6 @@ A Kubernetes operator for automatically collecting pprof profiles from Go applic
 - [Security Considerations](#-security-considerations)
     - [Performance Impact Considerations](#performance-impact-considerations)
 - [Quick Start](#-quick-start)
-- [Getting Started](#-getting-started)
-    - [Prerequisites](#prerequisites)
-    - [Installation](#installation)
-    - [Configuration](#configuration)
-        - [Profiler CRD Configuration Reference](#profiler-crd-configuration-reference)
-    - [Uninstallation](#uninstallation)
 - [Sample Application](#-sample-application)
 - [Distribution](#-distribution)
 - [Troubleshooting](#-troubleshooting)
@@ -281,128 +275,6 @@ curl http://localhost:8080/metrics
 7) Check profiles in S3
 
 Profiles are uploaded when CPU/memory thresholds are exceeded under the configured bucket/path.
-
----
-
-## 🚀 Getting Started
-
-### Prerequisites
-- Go version v1.24.0+
-- Docker version 17.03+
-- kubectl version v1.11.3+
-- Access to a Kubernetes v1.11.3+ cluster
-- AWS account with S3 access (for storing profiles)
-
-### Installation
-
-#### 1. Clone the repository
-```sh
-git clone https://github.com/maulindesai/pprof-operator.git
-cd pprof-operator
-```
-
-#### 2. Build and push the images
-Build and push both the operator and sidecar images:
-
-```sh
-make docker-build-all docker-push-all IMG=<your-registry>/pprof-operator:tag SIDECAR_IMG=<your-registry>/pprof-sidecar:tag
-```
-
-> **NOTE:** Make sure you have permission to push to the specified registry and that the images are accessible from your Kubernetes cluster.
-
-#### 3. Install the CRDs
-```sh
-make install
-```
-
-#### 4. Deploy the operator
-```sh
-make deploy IMG=<your-registry>/pprof-operator:tag
-```
-
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin privileges or be logged in as admin.
-
-### Configuration
-
-#### 1. Create AWS credentials secret
-The sidecar needs AWS credentials to upload profiles to S3:
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: aws-credentials
-  namespace: default  # Change to your namespace
-type: Opaque
-stringData:
-  AWS_ACCESS_KEY_ID: "your-access-key"
-  AWS_SECRET_ACCESS_KEY: "your-secret-key"
-```
-
-Apply the secret:
-
-```sh
-kubectl apply -f aws-credentials.yaml
-```
-
-#### 2. Create a Profiler resource
-Create a Profiler resource to configure which pods to monitor and the thresholds for profiling:
-
-```yaml
-apiVersion: observability.pprof-operator.dev/v1
-kind: Profiler
-metadata:
-  name: example-profiler
-  namespace: default  # Change to your namespace
-spec:
-  # CPU threshold in percentage (0-100) that triggers profiling
-  cpuThreshold: 70
-
-  # Memory threshold in percentage (0-100) that triggers profiling
-  memoryThreshold: 80
-
-  # Monitoring period in seconds to check resource usage (default: 15)
-  monitoringPeriod: 15
-
-  # S3 bucket to upload profiles to (required)
-  s3Bucket: my-profiles-bucket
-
-  # S3 region (default: us-east-1)
-  s3Region: us-west-2
-
-  # S3 path prefix for storing profiles (optional)
-  s3PathPrefix: profiles/
-
-  # Option A: Use AWS credentials from a secret (recommended)
-  awsCredentialsSecret: aws-credentials
-
-  # Option B: Provide AWS credentials inline (not recommended for production)
-  # AWS_ACCESS_KEY_ID: "your-access-key"
-  # AWS_SECRET_ACCESS_KEY: "your-secret-key"
-
-  # Optional: Scrape URL configuration for protected pprof endpoints
-  scrapURL:
-    scrapeURL: "http://localhost:8080/debug/pprof"
-    auth:
-      type: Basic  # or "None"
-      basicAuth:
-        username: "admin"
-        password: "password"
-```
-
-Apply the Profiler resource:
-
-```sh
-kubectl apply -f your-profiler.yaml
-```
-
-You can also use the sample configuration:
-
-```sh
-kubectl apply -k config/samples/
-```
-
-> **NOTE**: Make sure to update the sample with your S3 bucket and AWS credentials.
 
 #### Profiler CRD Configuration Reference
 
