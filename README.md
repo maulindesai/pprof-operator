@@ -9,7 +9,7 @@
 A Kubernetes operator for automatically collecting pprof profiles from Go applications when CPU or memory thresholds are exceeded, helping you diagnose and resolve performance issues in production environments.
 
 <div align="center">
-  <img src="https://go.dev/images/gophers/headlamp-colorized.svg" alt="Go Gopher" width="300"/>
+  <img src="https://github.com/maulindesai/pprof-operator/blob/main/brand/logo.svg" alt="Go Gopher" width="300"/>
 </div>
 
 ## 📑 Table of Contents
@@ -19,6 +19,7 @@ A Kubernetes operator for automatically collecting pprof profiles from Go applic
 - [Metrics](#-metrics)
 - [Security Considerations](#-security-considerations)
   - [Performance Impact Considerations](#performance-impact-considerations)
+- [Quick Start](#-quick-start)
 - [Getting Started](#-getting-started)
   - [Prerequisites](#prerequisites)
   - [Installation](#installation)
@@ -173,6 +174,116 @@ To minimize performance impact:
 - Configure longer monitoring periods for non-critical applications
 - Consider using different thresholds for different environments (dev, staging, prod)
 - Monitor the resource usage of the sidecar container itself
+
+## ⚡ Quick Start
+
+Get the operator running and collect your first profiles in a few minutes.
+
+1) Install CRDs and deploy the operator
+
+```sh
+# From the repo root
+make install
+
+# Deploy the controller (replace the image if you use your own registry)
+make deploy IMG=ghcr.io/maulindesai/pprof-operator:latest
+```
+
+2) Create AWS credentials secret (for uploading profiles to S3)
+
+Use the provided example and edit with your access key/secret:
+
+```sh
+kubectl apply -f config/samples/examples/sample-app/aws-credentials.yaml
+```
+
+3) Create a Profiler resource
+
+Create a minimal Profiler (name: profiler-sample). Adjust bucket/region/path as needed.
+
+```yaml
+apiVersion: observability.pprof-operator.dev/v1
+kind: Profiler
+metadata:
+  name: profiler-sample
+spec:
+  cpuThreshold: 70
+  memoryThreshold: 80
+  monitoringPeriod: 5
+  s3Bucket: "your-bucket"
+  s3Region: "us-east-1"
+  s3PathPrefix: "profiles/sample-app"
+  awsCredentialsSecret: "aws-credentials"
+```
+
+Apply it:
+
+```sh
+kubectl apply -f - <<'EOF'
+apiVersion: observability.pprof-operator.dev/v1
+kind: Profiler
+metadata:
+  name: profiler-sample
+spec:
+  cpuThreshold: 70
+  memoryThreshold: 80
+  monitoringPeriod: 5
+  s3Bucket: "your-bucket"
+  s3Region: "us-east-1"
+  s3PathPrefix: "profiles/sample-app"
+  awsCredentialsSecret: "aws-credentials"
+EOF
+```
+
+4) Deploy a sample app and annotate it for profiling
+
+You can use the provided sample app, which exposes pprof on :8080. Make sure to include the profiler name annotation.
+
+```sh
+# Build and load the sample app image (optional; you can also use your own app)
+# docker build -t sample-app:latest config/samples/examples/sample-app
+
+# Deploy the sample app
+kubectl apply -f config/samples/examples/sample-app/deployment.yaml
+
+# Add the profiler name annotation required by the webhook (if not already present)
+kubectl annotate deploy/pprof-sample-app profiler.pprof.dev/name=profiler-sample --overwrite
+```
+
+Required pod annotations:
+- profiler.pprof.dev/enable: "true"![logo.jpeg](../../../Downloads/logo.jpeg)
+- profiler.pprof.dev/name: "profiler-sample" (must match the Profiler resource name)
+- profiler.pprof.dev/target_container: name of your app container (e.g., "app")
+- profiler.pprof.dev/scrape_url: pprof base URL (e.g., "http://localhost:8080/debug/pprof")
+
+Optional:
+- profiler.pprof.dev/sidecar_metrics_port: "9090" (override sidecar metrics port; default 8080)
+
+5) Verify the sidecar was injected
+
+```sh
+kubectl get pods -l app=pprof-sample-app -o=jsonpath='{range .items[*]}{.metadata.name}{"\t"}{range .spec.containers[*]}{.name}{","}{end}{"\n"}{end}'
+```
+
+Look for a container named "pprof-sidecar".
+
+6) Access sidecar metrics (Prometheus)
+
+```sh
+# Default port
+kubectl port-forward deploy/pprof-sample-app 8080:8080
+curl http://localhost:8080/metrics
+
+# If you set a custom port via annotation (e.g., 9090)
+# kubectl port-forward deploy/pprof-sample-app 9090:9090
+# curl http://localhost:9090/metrics
+```
+
+7) Check profiles in S3
+
+Profiles are uploaded when CPU/memory thresholds are exceeded under the configured bucket/path.
+
+---
 
 ## 🚀 Getting Started
 
