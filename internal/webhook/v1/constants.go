@@ -61,4 +61,8 @@ const (
 	// AnnotationDebug enables debug logging for the sidecar when set to a truthy value
 	// Supported values: "true", "1", "debug" (case-insensitive)
 	AnnotationDebug = "profiler.pprof.dev/debug"
+
+	// AnnotationSidecarMetricsPort allows setting a custom metrics port for the sidecar
+	// If not set, the sidecar defaults to 8080
+	AnnotationSidecarMetricsPort = "profiler.pprof.dev/sidecar_metrics_port"
 )
