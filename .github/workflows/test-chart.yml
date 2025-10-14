@@ -75,7 +75,7 @@ jobs:
 
       - name: Install Helm chart for project
         run: |
-          helm install my-release ./dist/chart --create-namespace --namespace pprof-operator-system
+          helm install my-release ./charts/pprof-operator --create-namespace --namespace pprof-operator-system
 
       - name: Check Helm release status
         run: |
