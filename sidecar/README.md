@@ -29,6 +29,7 @@ The sidecar is configured through environment variables, which are automatically
 | S3_PATH_PREFIX | Path prefix for storing profiles in the S3 bucket | (empty) |
 | AWS_ACCESS_KEY_ID | AWS access key ID | (from secret) |
 | AWS_SECRET_ACCESS_KEY | AWS secret access key | (from secret) |
+| METRICS_ADDR | Address the sidecar exposes Prometheus metrics on | :8080 (set by operator; can be overridden via pod annotation `profiler.pprof.dev/sidecar_metrics_port`) |
 
 ## Usage
 

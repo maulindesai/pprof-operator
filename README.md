@@ -102,7 +102,7 @@ The operator exposes the following metrics on port 8443 (HTTPS) or 8080 (HTTP):
 
 ### Sidecar Metrics
 
-Each sidecar container exposes the following metrics on port 8080:
+Each sidecar container exposes the following metrics on port 8080 by default. You can override this via the pod annotation `profiler.pprof.dev/sidecar_metrics_port`. The operator sets the sidecar's `METRICS_ADDR` environment variable accordingly.
 
 | Metric Name | Type | Labels | Description |
 |-------------|------|--------|-------------|
@@ -124,14 +124,16 @@ kubectl port-forward -n pprof-operator-system svc/controller-manager-metrics-ser
 curl -k https://localhost:8443/metrics
 ```
 
-To access sidecar metrics:
+To access sidecar metrics (default port 8080, or your custom port if set via the `profiler.pprof.dev/sidecar_metrics_port` annotation):
 
 ```sh
-# Port-forward to a specific pod's sidecar
+# Port-forward to a specific pod's sidecar on the default port
 kubectl port-forward -n <namespace> <pod-name> 8080:8080
-
-# Access metrics
 curl http://localhost:8080/metrics
+
+# If you configured a custom metrics port (e.g., 9090):
+kubectl port-forward -n <namespace> <pod-name> 9090:9090
+curl http://localhost:9090/metrics
 ```
 
 ### Integrating with Prometheus
